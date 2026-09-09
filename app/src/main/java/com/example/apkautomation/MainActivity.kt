@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
 
         btVoiceManager = BluetoothVoiceManager(this, bluetoothAdapter, lifecycleScope)
         wifiVoiceManager = WifiDirectVoiceManager(this, lifecycleScope)
+        wifiVoiceManager.initialize()
 
         setContent {
             MaterialTheme(

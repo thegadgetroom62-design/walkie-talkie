@@ -24,6 +24,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.example.apkautomation.bluetooth.ConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -108,6 +109,9 @@ class WifiDirectVoiceManager(
         addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
     }
 
+    private var pollConnectionJob: Job? = null
+    private var passiveWatcherJob: Job? = null
+
     private val receiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -118,13 +122,10 @@ class WifiDirectVoiceManager(
                     }
                 }
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                    val networkInfo = intent.getParcelableExtra<NetworkInfo>(WifiP2pManager.EXTRA_NETWORK_INFO)
-                    if (networkInfo?.isConnected == true) {
-                        wifiP2pManager?.requestConnectionInfo(channel) { info ->
+                    wifiP2pManager?.requestConnectionInfo(channel) { info ->
+                        if (info != null && info.groupFormed) {
                             handleConnectionEstablished(info)
-                        }
-                    } else {
-                        if (_connectionState.value == ConnectionState.CONNECTED) {
+                        } else if (_connectionState.value == ConnectionState.CONNECTED) {
                             disconnect()
                         }
                     }
@@ -145,14 +146,42 @@ class WifiDirectVoiceManager(
         if (wifiP2pManager != null && channel == null) {
             channel = wifiP2pManager.initialize(context, context.mainLooper, null)
             try {
-                context.registerReceiver(receiver, intentFilter)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    ContextCompat.registerReceiver(
+                        context,
+                        receiver,
+                        intentFilter,
+                        ContextCompat.RECEIVER_EXPORTED
+                    )
+                } else {
+                    context.registerReceiver(receiver, intentFilter)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Receiver register error", e)
+            }
+            startPassiveWatcher()
+        }
+    }
+
+    private fun startPassiveWatcher() {
+        passiveWatcherJob?.cancel()
+        passiveWatcherJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(1200)
+                if (_connectionState.value != ConnectionState.CONNECTED && channel != null) {
+                    wifiP2pManager?.requestConnectionInfo(channel) { info ->
+                        if (info != null && info.groupFormed) {
+                            handleConnectionEstablished(info)
+                        }
+                    }
+                }
             }
         }
     }
 
     fun unregister() {
+        passiveWatcherJob?.cancel()
+        pollConnectionJob?.cancel()
         try {
             context.unregisterReceiver(receiver)
         } catch (e: Exception) {
@@ -189,7 +218,7 @@ class WifiDirectVoiceManager(
 
         wifiP2pManager?.connect(channel, config, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                _statusMessage.value = "Connected! Negotiating audio channel..."
+                _statusMessage.value = "Connected! Setting up audio channel..."
             }
 
             override fun onFailure(reason: Int) {
@@ -197,6 +226,20 @@ class WifiDirectVoiceManager(
                 _statusMessage.value = "Connection failed (Code: $reason)"
             }
         })
+
+        // Active Watchdog: Poll connection info every 500ms so we don't get stuck on connecting
+        pollConnectionJob?.cancel()
+        pollConnectionJob = scope.launch(Dispatchers.IO) {
+            for (i in 1..40) {
+                delay(500)
+                if (_connectionState.value == ConnectionState.CONNECTED) break
+                wifiP2pManager?.requestConnectionInfo(channel) { info ->
+                    if (info != null && info.groupFormed) {
+                        handleConnectionEstablished(info)
+                    }
+                }
+            }
+        }
     }
 
     private fun handleConnectionEstablished(info: WifiP2pInfo) {
