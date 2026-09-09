@@ -13,6 +13,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.ToneGenerator
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -298,10 +299,22 @@ class BluetoothVoiceManager(
         }
     }
 
+    private var toneGenerator: ToneGenerator? = null
+
+    init {
+        try {
+            toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 85)
+        } catch (e: Exception) {
+            Log.e(TAG, "ToneGenerator init failed", e)
+        }
+    }
+
     /**
      * Stop transmitting microphone audio (Push-to-Talk released)
      */
     fun stopTalking() {
+        if (!_isTransmitting.value) return
+
         _isTransmitting.value = false
         _statusMessage.value = "Connected to ${_connectedDeviceName.value}"
 
@@ -315,6 +328,35 @@ class BluetoothVoiceManager(
             Log.e(TAG, "Error stopping AudioRecord", e)
         } finally {
             audioRecord = null
+        }
+
+        triggerHapticFeedback(40)
+        playRogerBeep()
+    }
+
+    fun playRogerBeep() {
+        try {
+            toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP, 120)
+        } catch (e: Exception) {
+            Log.e(TAG, "Roger beep error", e)
+        }
+    }
+
+    fun triggerHapticFeedback(durationMs: Long) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
+                vibratorManager?.defaultVibrator?.vibrate(
+                    android.os.VibrationEffect.createOneShot(durationMs, android.os.VibrationEffect.DEFAULT_AMPLITUDE)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(durationMs)
+            }
+        } catch (e: Exception) {
+            // Ignored
         }
     }
 
