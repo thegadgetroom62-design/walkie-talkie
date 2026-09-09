@@ -23,14 +23,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SettingsBluetooth
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
@@ -43,7 +47,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -158,6 +164,28 @@ fun WalkieTalkieApp(
     val isBtConnected = (btManager.connectionState.collectAsState().value == ConnectionState.CONNECTED)
     val isWifiConnected = (wifiManager.connectionState.collectAsState().value == ConnectionState.CONNECTED)
 
+    val context = LocalContext.current
+    val sharedPrefs = remember { context.getSharedPreferences("walkie_prefs", Context.MODE_PRIVATE) }
+    var securityPin by remember { mutableStateOf(sharedPrefs.getString("security_pin", "1234") ?: "1234") }
+    var showPinDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(securityPin) {
+        btManager.updateSecurityPin(securityPin)
+        wifiManager.updateSecurityPin(securityPin)
+    }
+
+    if (showPinDialog) {
+        SecurityPinDialog(
+            currentPin = securityPin,
+            onDismiss = { showPinDialog = false },
+            onSavePin = { newPin ->
+                securityPin = newPin
+                sharedPrefs.edit().putString("security_pin", newPin).apply()
+                showPinDialog = false
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -172,6 +200,15 @@ fun WalkieTalkieApp(
                         Text(
                             text = "Walkie-Talkie",
                             fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showPinDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Security PIN",
+                            tint = Color(0xFF10B981)
                         )
                     }
                 },
@@ -207,6 +244,7 @@ fun WalkieTalkieApp(
                     onStartTalking = { btManager.startTalking() },
                     onStopTalking = { btManager.stopTalking() },
                     onToggleSpeaker = { btManager.toggleSpeakerphone() },
+                    onOpenSecuritySettings = { showPinDialog = true },
                     onDisconnect = { btManager.disconnect() }
                 )
             } else if (isWifiConnected) {
@@ -226,6 +264,7 @@ fun WalkieTalkieApp(
                     onStartTalking = { wifiManager.startTalking() },
                     onStopTalking = { wifiManager.stopTalking() },
                     onToggleSpeaker = { wifiManager.toggleSpeakerphone() },
+                    onOpenSecuritySettings = { showPinDialog = true },
                     onDisconnect = { wifiManager.disconnect() }
                 )
             } else {
@@ -625,6 +664,7 @@ fun ActiveCallScreen(
     onStartTalking: () -> Unit,
     onStopTalking: () -> Unit,
     onToggleSpeaker: () -> Unit,
+    onOpenSecuritySettings: () -> Unit,
     onDisconnect: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -665,12 +705,21 @@ fun ActiveCallScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text(
-                        text = modeLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = "Encrypted",
+                            tint = Color(0xFF10B981),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "AES-256 ENCRYPTED",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF10B981),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = deviceName,
@@ -691,18 +740,36 @@ fun ActiveCallScreen(
                     )
                 }
 
-                IconButton(
-                    onClick = onToggleSpeaker,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(if (isSpeakerphone) Color(0xFF064E3B) else Color(0xFF374151))
-                ) {
-                    Icon(
-                        imageVector = if (isSpeakerphone) Icons.Default.VolumeUp else Icons.Default.Hearing,
-                        contentDescription = "Speaker Toggle",
-                        tint = if (isSpeakerphone) Color(0xFF10B981) else Color.LightGray
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onOpenSecuritySettings,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF374151))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Key,
+                            contentDescription = "PIN Settings",
+                            tint = Color(0xFF10B981)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    IconButton(
+                        onClick = onToggleSpeaker,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(if (isSpeakerphone) Color(0xFF064E3B) else Color(0xFF374151))
+                    ) {
+                        Icon(
+                            imageVector = if (isSpeakerphone) Icons.Default.VolumeUp else Icons.Default.Hearing,
+                            contentDescription = "Speaker Toggle",
+                            tint = if (isSpeakerphone) Color(0xFF10B981) else Color.LightGray
+                        )
+                    }
                 }
             }
         }
@@ -776,3 +843,60 @@ fun ActiveCallScreen(
         }
     }
 }
+
+@Composable
+fun SecurityPinDialog(
+    currentPin: String,
+    onDismiss: () -> Unit,
+    onSavePin: (String) -> Unit
+) {
+    var pinText by remember { mutableStateOf(currentPin) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Voice Encryption PIN", fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Calls are encrypted with AES-256 CTR. Both phones must have matching PINs to hear each other clearly. If PINs mismatch, incoming audio will be silent or undecryptable.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.LightGray
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = pinText,
+                    onValueChange = { if (it.length <= 8) pinText = it },
+                    label = { Text("Secret PIN") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (pinText.isNotBlank()) {
+                        onSavePin(pinText)
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Save PIN", color = Color.Black, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = Color.Gray)
+            }
+        },
+        containerColor = Color(0xFF1E293B)
+    )
+}
+

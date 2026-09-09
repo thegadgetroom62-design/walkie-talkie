@@ -16,6 +16,7 @@ import android.media.MediaRecorder
 import android.media.ToneGenerator
 import android.os.Build
 import android.util.Log
+import com.example.apkautomation.crypto.VoiceEncryptor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +24,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -112,6 +115,12 @@ class BluetoothVoiceManager(
 
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
+
+    private var voiceEncryptor: VoiceEncryptor = VoiceEncryptor("1234")
+
+    fun updateSecurityPin(pin: String) {
+        voiceEncryptor = VoiceEncryptor(pin)
+    }
 
     /**
      * Start hosting an incoming call session
@@ -226,15 +235,21 @@ class BluetoothVoiceManager(
 
         receiveJob = scope.launch(Dispatchers.IO) {
             val stream = inputStream ?: return@launch
-            val buffer = ByteArray(bufferSize)
+            val dataInput = DataInputStream(stream)
 
             while (isActive && activeSocket?.isConnected == true) {
                 try {
-                    val bytesRead = stream.read(buffer)
-                    if (bytesRead > 0) {
-                        _isReceiving.value = true
-                        audioTrack?.write(buffer, 0, bytesRead)
-                    } else if (bytesRead == -1) {
+                    val frameLength = dataInput.readInt()
+                    if (frameLength in 17..8192) {
+                        val encryptedPacket = ByteArray(frameLength)
+                        dataInput.readFully(encryptedPacket)
+
+                        val decrypted = voiceEncryptor.decrypt(encryptedPacket, 0, frameLength)
+                        if (decrypted != null && decrypted.isNotEmpty()) {
+                            _isReceiving.value = true
+                            audioTrack?.write(decrypted, 0, decrypted.size)
+                        }
+                    } else if (frameLength < 0) {
                         break
                     }
                 } catch (e: IOException) {
@@ -259,7 +274,7 @@ class BluetoothVoiceManager(
         if (_isTransmitting.value) return
 
         _isTransmitting.value = true
-        _statusMessage.value = "Transmitting voice..."
+        _statusMessage.value = "Transmitting (Encrypted BT)..."
 
         val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, AUDIO_FORMAT)
         val bufferSize = maxOf(minBufferSize, 2048)
@@ -281,6 +296,7 @@ class BluetoothVoiceManager(
 
         transmitJob = scope.launch(Dispatchers.IO) {
             val stream = outputStream ?: return@launch
+            val dataOutput = DataOutputStream(stream)
             val record = audioRecord ?: return@launch
             val buffer = ByteArray(bufferSize)
 
@@ -288,8 +304,10 @@ class BluetoothVoiceManager(
                 val bytesRead = record.read(buffer, 0, buffer.size)
                 if (bytesRead > 0) {
                     try {
-                        stream.write(buffer, 0, bytesRead)
-                        stream.flush()
+                        val encrypted = voiceEncryptor.encrypt(buffer, 0, bytesRead)
+                        dataOutput.writeInt(encrypted.size)
+                        dataOutput.write(encrypted)
+                        dataOutput.flush()
                     } catch (e: IOException) {
                         Log.e(TAG, "Transmission write failed", e)
                         break

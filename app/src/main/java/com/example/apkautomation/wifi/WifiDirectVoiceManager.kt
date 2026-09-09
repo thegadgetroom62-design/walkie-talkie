@@ -26,6 +26,7 @@ import android.os.VibratorManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.apkautomation.bluetooth.ConnectionState
+import com.example.apkautomation.crypto.VoiceEncryptor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -101,6 +102,12 @@ class WifiDirectVoiceManager(
     private var handshakeJob: Job? = null
 
     private var toneGenerator: ToneGenerator? = null
+
+    private var voiceEncryptor: VoiceEncryptor = VoiceEncryptor("1234")
+
+    fun updateSecurityPin(pin: String) {
+        voiceEncryptor = VoiceEncryptor(pin)
+    }
 
     private val intentFilter = IntentFilter().apply {
         addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
@@ -377,10 +384,13 @@ class WifiDirectVoiceManager(
                             // Handshake confirmed
                         }
                         PKT_AUDIO -> {
-                            val audioLength = packet.length - 5
-                            if (audioLength > 0) {
-                                _isReceiving.value = true
-                                audioTrack?.write(packet.data, 5, audioLength)
+                            val payloadLength = packet.length - 5
+                            if (payloadLength > 16) {
+                                val decrypted = voiceEncryptor.decrypt(packet.data, 5, payloadLength)
+                                if (decrypted != null && decrypted.isNotEmpty()) {
+                                    _isReceiving.value = true
+                                    audioTrack?.write(decrypted, 0, decrypted.size)
+                                }
                             }
                         }
                     }
@@ -399,7 +409,7 @@ class WifiDirectVoiceManager(
 
         triggerHapticFeedback(60)
         _isTransmitting.value = true
-        _statusMessage.value = "Transmitting (Wi-Fi Direct)..."
+        _statusMessage.value = "Transmitting (Encrypted Wi-Fi)..."
 
         val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, AUDIO_FORMAT)
         val bufferSize = maxOf(minBufferSize, 2048)
@@ -426,8 +436,9 @@ class WifiDirectVoiceManager(
             while (isActive && _isTransmitting.value) {
                 val bytesRead = record.read(buffer, 0, buffer.size)
                 if (bytesRead > 0) {
+                    val encrypted = voiceEncryptor.encrypt(buffer, 0, bytesRead)
                     val target = targetPeerAddress ?: InetAddress.getByName("192.168.49.255")
-                    sendPacket(PKT_AUDIO, target, buffer, bytesRead)
+                    sendPacket(PKT_AUDIO, target, encrypted, encrypted.size)
                 }
             }
         }
