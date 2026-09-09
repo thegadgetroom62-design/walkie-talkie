@@ -5,12 +5,15 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
+import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +35,7 @@ enum class ConnectionState {
 }
 
 class BluetoothVoiceManager(
+    private val context: Context,
     private val bluetoothAdapter: BluetoothAdapter?,
     private val scope: CoroutineScope
 ) {
@@ -61,6 +65,39 @@ class BluetoothVoiceManager(
 
     private val _statusMessage = MutableStateFlow("Ready to connect")
     val statusMessage = _statusMessage.asStateFlow()
+
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+    private val _isSpeakerphone = MutableStateFlow(true)
+    val isSpeakerphone = _isSpeakerphone.asStateFlow()
+
+    fun toggleSpeakerphone() {
+        val newState = !_isSpeakerphone.value
+        _isSpeakerphone.value = newState
+        applySpeakerphoneRouting(newState)
+    }
+
+    private fun applySpeakerphoneRouting(enabled: Boolean) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (enabled) {
+                    val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (speaker != null) {
+                        audioManager.setCommunicationDevice(speaker)
+                    }
+                } else {
+                    audioManager.clearCommunicationDevice()
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = enabled
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to route audio to speaker", e)
+        }
+    }
 
     private var serverSocket: BluetoothServerSocket? = null
     private var activeSocket: BluetoothSocket? = null
@@ -156,6 +193,8 @@ class BluetoothVoiceManager(
      * Background listener for incoming voice packets
      */
     private fun startAudioReceiver() {
+        applySpeakerphoneRouting(_isSpeakerphone.value)
+
         val minBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, AUDIO_FORMAT)
         val bufferSize = maxOf(minBufferSize, 2048)
 
@@ -163,7 +202,7 @@ class BluetoothVoiceManager(
             audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )

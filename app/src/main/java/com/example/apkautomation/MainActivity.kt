@@ -25,9 +25,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.SettingsBluetooth
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -56,7 +58,7 @@ class MainActivity : ComponentActivity() {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         bluetoothAdapter = bluetoothManager?.adapter
 
-        voiceManager = BluetoothVoiceManager(bluetoothAdapter, lifecycleScope)
+        voiceManager = BluetoothVoiceManager(this, bluetoothAdapter, lifecycleScope)
 
         setContent {
             MaterialTheme(
@@ -126,6 +128,7 @@ fun WalkieTalkieApp(
     val connectedDeviceName by voiceManager.connectedDeviceName.collectAsState()
     val isTransmitting by voiceManager.isTransmitting.collectAsState()
     val isReceiving by voiceManager.isReceiving.collectAsState()
+    val isSpeakerphone by voiceManager.isSpeakerphone.collectAsState()
     val statusMessage by voiceManager.statusMessage.collectAsState()
 
     Scaffold(
@@ -165,9 +168,11 @@ fun WalkieTalkieApp(
                     deviceName = connectedDeviceName ?: "Peer Device",
                     isTransmitting = isTransmitting,
                     isReceiving = isReceiving,
+                    isSpeakerphone = isSpeakerphone,
                     statusMessage = statusMessage,
                     onStartTalking = { voiceManager.startTalking() },
                     onStopTalking = { voiceManager.stopTalking() },
+                    onToggleSpeaker = { voiceManager.toggleSpeakerphone() },
                     onDisconnect = { voiceManager.disconnect() }
                 )
             } else {
@@ -390,9 +395,11 @@ fun ActiveCallScreen(
     deviceName: String,
     isTransmitting: Boolean,
     isReceiving: Boolean,
+    isSpeakerphone: Boolean,
     statusMessage: String,
     onStartTalking: () -> Unit,
     onStopTalking: () -> Unit,
+    onToggleSpeaker: () -> Unit,
     onDisconnect: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -425,32 +432,51 @@ fun ActiveCallScreen(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Connected to",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray
-                )
-                Text(
-                    text = deviceName,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = statusMessage,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = when {
-                        isTransmitting -> Color(0xFFEF4444)
-                        isReceiving -> Color(0xFF3B82F6)
-                        else -> Color(0xFF10B981)
-                    },
-                    fontWeight = FontWeight.SemiBold
-                )
+                Column {
+                    Text(
+                        text = "Connected to",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                    Text(
+                        text = deviceName,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = statusMessage,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = when {
+                            isTransmitting -> Color(0xFFEF4444)
+                            isReceiving -> Color(0xFF3B82F6)
+                            else -> Color(0xFF10B981)
+                        },
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                IconButton(
+                    onClick = onToggleSpeaker,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(if (isSpeakerphone) Color(0xFF064E3B) else Color(0xFF374151))
+                ) {
+                    Icon(
+                        imageVector = if (isSpeakerphone) Icons.Default.VolumeUp else Icons.Default.Hearing,
+                        contentDescription = "Speaker Toggle",
+                        tint = if (isSpeakerphone) Color(0xFF10B981) else Color.LightGray
+                    )
+                }
             }
         }
 
