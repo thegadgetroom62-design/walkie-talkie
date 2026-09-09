@@ -14,6 +14,7 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.ToneGenerator
 import android.net.NetworkInfo
+import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
@@ -27,6 +28,7 @@ import com.example.apkautomation.bluetooth.ConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -36,6 +38,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.SocketException
+import kotlin.random.Random
 
 class WifiDirectVoiceManager(
     private val context: Context,
@@ -48,7 +51,15 @@ class WifiDirectVoiceManager(
         private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
         private const val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+
+        // Packet type identifiers
+        private const val PKT_PING: Byte = 1
+        private const val PKT_PONG: Byte = 2
+        private const val PKT_AUDIO: Byte = 3
     }
+
+    // Unique random ID for this session to filter out self-broadcast echo
+    private val localSenderId: Int = Random.nextInt(100000, 999999)
 
     private val wifiP2pManager: WifiP2pManager? =
         context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
@@ -86,6 +97,7 @@ class WifiDirectVoiceManager(
 
     private var receiveJob: Job? = null
     private var transmitJob: Job? = null
+    private var handshakeJob: Job? = null
 
     private var toneGenerator: ToneGenerator? = null
 
@@ -172,11 +184,12 @@ class WifiDirectVoiceManager(
 
         val config = WifiP2pConfig().apply {
             deviceAddress = device.deviceAddress
+            wps.setup = WpsInfo.PBC
         }
 
         wifiP2pManager?.connect(channel, config, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                _statusMessage.value = "Connected! Setting up audio channel..."
+                _statusMessage.value = "Connected! Negotiating audio channel..."
             }
 
             override fun onFailure(reason: Int) {
@@ -191,13 +204,56 @@ class WifiDirectVoiceManager(
 
         isGroupOwner = info.isGroupOwner
         _connectionState.value = ConnectionState.CONNECTED
-        _statusMessage.value = if (isGroupOwner) "Connected as Host (Long Range)" else "Connected to Peer (Long Range)"
 
         if (!isGroupOwner) {
             targetPeerAddress = info.groupOwnerAddress
+            _statusMessage.value = "Connected (Peer: ${info.groupOwnerAddress.hostAddress})"
+        } else {
+            _statusMessage.value = "Connected as Host (Listening for peer IP...)"
         }
 
         startUdpReceiver()
+        startHandshakeLoop()
+    }
+
+    /**
+     * Periodically send handshake pings to learn peer IP and confirm bidirectional routing
+     */
+    private fun startHandshakeLoop() {
+        handshakeJob?.cancel()
+        handshakeJob = scope.launch(Dispatchers.IO) {
+            for (i in 1..20) {
+                if (!isActive) break
+                try {
+                    val target = targetPeerAddress ?: InetAddress.getByName("192.168.49.255")
+                    sendPacket(PKT_PING, target, ByteArray(0))
+                } catch (e: Exception) {
+                    // Ignore
+                }
+                delay(600)
+            }
+        }
+    }
+
+    private fun sendPacket(type: Byte, address: InetAddress, payload: ByteArray, payloadLength: Int = payload.size) {
+        val socket = udpSocket ?: return
+        val buffer = ByteArray(5 + payloadLength)
+        buffer[0] = type
+        buffer[1] = ((localSenderId shr 24) and 0xFF).toByte()
+        buffer[2] = ((localSenderId shr 16) and 0xFF).toByte()
+        buffer[3] = ((localSenderId shr 8) and 0xFF).toByte()
+        buffer[4] = (localSenderId and 0xFF).toByte()
+
+        if (payloadLength > 0) {
+            System.arraycopy(payload, 0, buffer, 5, payloadLength)
+        }
+
+        try {
+            val packet = DatagramPacket(buffer, buffer.size, address, VOICE_PORT)
+            socket.send(packet)
+        } catch (e: Exception) {
+            Log.e(TAG, "Send packet error", e)
+        }
     }
 
     private fun startUdpReceiver() {
@@ -243,20 +299,47 @@ class WifiDirectVoiceManager(
 
         receiveJob = scope.launch(Dispatchers.IO) {
             val socket = udpSocket ?: return@launch
-            val buffer = ByteArray(bufferSize)
+            val buffer = ByteArray(bufferSize + 16)
             val packet = DatagramPacket(buffer, buffer.size)
 
             while (isActive && !socket.isClosed) {
                 try {
                     socket.receive(packet)
-                    // If we are group owner, record where the client packet came from
-                    if (isGroupOwner && targetPeerAddress == null) {
-                        targetPeerAddress = packet.address
+
+                    if (packet.length < 5) continue
+
+                    val packetType = buffer[0]
+                    val senderId = ((buffer[1].toInt() and 0xFF) shl 24) or
+                            ((buffer[2].toInt() and 0xFF) shl 16) or
+                            ((buffer[3].toInt() and 0xFF) shl 8) or
+                            (buffer[4].toInt() and 0xFF)
+
+                    // 1. FILTER OUT SELF-ECHO (Ignore broadcast packets reflected back to ourselves)
+                    if (senderId == localSenderId) {
+                        continue
                     }
 
-                    if (packet.length > 0) {
-                        _isReceiving.value = true
-                        audioTrack?.write(packet.data, packet.offset, packet.length)
+                    // 2. Lock onto the peer's exact IP address
+                    if (targetPeerAddress == null || targetPeerAddress != packet.address) {
+                        targetPeerAddress = packet.address
+                        _statusMessage.value = "Channel Active (${packet.address.hostAddress})"
+                    }
+
+                    when (packetType) {
+                        PKT_PING -> {
+                            // Peer is looking for us; send PONG reply directly to their IP
+                            sendPacket(PKT_PONG, packet.address, ByteArray(0))
+                        }
+                        PKT_PONG -> {
+                            // Handshake confirmed
+                        }
+                        PKT_AUDIO -> {
+                            val audioLength = packet.length - 5
+                            if (audioLength > 0) {
+                                _isReceiving.value = true
+                                audioTrack?.write(packet.data, 5, audioLength)
+                            }
+                        }
                     }
                 } catch (e: IOException) {
                     break
@@ -294,23 +377,14 @@ class WifiDirectVoiceManager(
         }
 
         transmitJob = scope.launch(Dispatchers.IO) {
-            val socket = udpSocket ?: return@launch
             val record = audioRecord ?: return@launch
             val buffer = ByteArray(bufferSize)
-
-            // If target peer is not resolved yet (e.g. Host waiting for client), broadcast to subnet
-            val targetAddress = targetPeerAddress ?: InetAddress.getByName("192.168.49.255")
 
             while (isActive && _isTransmitting.value) {
                 val bytesRead = record.read(buffer, 0, buffer.size)
                 if (bytesRead > 0) {
-                    try {
-                        val packet = DatagramPacket(buffer, bytesRead, targetAddress, VOICE_PORT)
-                        socket.send(packet)
-                    } catch (e: IOException) {
-                        Log.e(TAG, "UDP send failed", e)
-                        break
-                    }
+                    val target = targetPeerAddress ?: InetAddress.getByName("192.168.49.255")
+                    sendPacket(PKT_AUDIO, target, buffer, bytesRead)
                 }
             }
         }
@@ -394,6 +468,9 @@ class WifiDirectVoiceManager(
 
     fun disconnect() {
         stopTalking()
+
+        handshakeJob?.cancel()
+        handshakeJob = null
 
         receiveJob?.cancel()
         receiveJob = null
