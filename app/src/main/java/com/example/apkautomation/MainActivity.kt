@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.SettingsBluetooth
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
@@ -57,17 +58,21 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.apkautomation.bluetooth.BluetoothVoiceManager
 import com.example.apkautomation.bluetooth.ConnectionState
+import com.example.apkautomation.radar.RadarScreen
+import com.example.apkautomation.radar.WifiRadarEngine
 import com.example.apkautomation.wifi.WifiDirectVoiceManager
 
 enum class CommsMode {
     BLUETOOTH,
-    WIFI_DIRECT
+    WIFI_DIRECT,
+    WIFI_RADAR
 }
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var btVoiceManager: BluetoothVoiceManager
     private lateinit var wifiVoiceManager: WifiDirectVoiceManager
+    private lateinit var radarEngine: WifiRadarEngine
     private var bluetoothAdapter: BluetoothAdapter? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,6 +84,7 @@ class MainActivity : ComponentActivity() {
         btVoiceManager = BluetoothVoiceManager(this, bluetoothAdapter, lifecycleScope)
         wifiVoiceManager = WifiDirectVoiceManager(this, lifecycleScope)
         wifiVoiceManager.initialize()
+        radarEngine = WifiRadarEngine(this, lifecycleScope)
 
         setContent {
             MaterialTheme(
@@ -96,6 +102,7 @@ class MainActivity : ComponentActivity() {
                     WalkieTalkieApp(
                         btManager = btVoiceManager,
                         wifiManager = wifiVoiceManager,
+                        radarEngine = radarEngine,
                         bluetoothAdapter = bluetoothAdapter,
                         checkPermissions = { hasRequiredPermissions() }
                     )
@@ -109,6 +116,7 @@ class MainActivity : ComponentActivity() {
         btVoiceManager.disconnect()
         wifiVoiceManager.disconnect()
         wifiVoiceManager.unregister()
+        radarEngine.stopRadar()
     }
 
     private fun hasRequiredPermissions(): Boolean {
@@ -134,6 +142,7 @@ class MainActivity : ComponentActivity() {
 fun WalkieTalkieApp(
     btManager: BluetoothVoiceManager,
     wifiManager: WifiDirectVoiceManager,
+    radarEngine: WifiRadarEngine,
     bluetoothAdapter: BluetoothAdapter?,
     checkPermissions: () -> Boolean
 ) {
@@ -278,13 +287,14 @@ fun WalkieTalkieApp(
                         selected = selectedMode == CommsMode.BLUETOOTH,
                         onClick = {
                             wifiManager.disconnect()
+                            radarEngine.stopRadar()
                             selectedMode = CommsMode.BLUETOOTH
                         },
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Bluetooth (~25m)")
+                                Icon(Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Bluetooth", fontSize = 12.sp)
                             }
                         }
                     )
@@ -292,14 +302,30 @@ fun WalkieTalkieApp(
                         selected = selectedMode == CommsMode.WIFI_DIRECT,
                         onClick = {
                             btManager.disconnect()
+                            radarEngine.stopRadar()
                             selectedMode = CommsMode.WIFI_DIRECT
                             wifiManager.startPeerDiscovery()
                         },
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Wi-Fi P2P (~150m)")
+                                Icon(Icons.Default.Wifi, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Wi-Fi P2P", fontSize = 12.sp)
+                            }
+                        }
+                    )
+                    Tab(
+                        selected = selectedMode == CommsMode.WIFI_RADAR,
+                        onClick = {
+                            btManager.disconnect()
+                            wifiManager.disconnect()
+                            selectedMode = CommsMode.WIFI_RADAR
+                        },
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Sensors, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Radar", fontSize = 12.sp)
                             }
                         }
                     )
@@ -307,22 +333,30 @@ fun WalkieTalkieApp(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                if (selectedMode == CommsMode.BLUETOOTH) {
-                    val btState by btManager.connectionState.collectAsState()
-                    val btStatus by btManager.statusMessage.collectAsState()
+                when (selectedMode) {
+                    CommsMode.BLUETOOTH -> {
+                        val btState by btManager.connectionState.collectAsState()
+                        val btStatus by btManager.statusMessage.collectAsState()
 
-                    SetupScreen(
-                        connectionState = btState,
-                        statusMessage = btStatus,
-                        bluetoothAdapter = bluetoothAdapter,
-                        onHostCall = { btManager.startHosting() },
-                        onConnectDevice = { device -> btManager.connectToDevice(device) },
-                        onCancel = { btManager.disconnect() }
-                    )
-                } else {
-                    WifiDirectSetupScreen(
-                        wifiManager = wifiManager
-                    )
+                        SetupScreen(
+                            connectionState = btState,
+                            statusMessage = btStatus,
+                            bluetoothAdapter = bluetoothAdapter,
+                            onHostCall = { btManager.startHosting() },
+                            onConnectDevice = { device -> btManager.connectToDevice(device) },
+                            onCancel = { btManager.disconnect() }
+                        )
+                    }
+                    CommsMode.WIFI_DIRECT -> {
+                        WifiDirectSetupScreen(
+                            wifiManager = wifiManager
+                        )
+                    }
+                    CommsMode.WIFI_RADAR -> {
+                        RadarScreen(
+                            radarEngine = radarEngine
+                        )
+                    }
                 }
             }
         }
