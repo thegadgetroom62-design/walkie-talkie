@@ -1,0 +1,75 @@
+name: Build & Package Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build variant to produce'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build:
+    name: Compile & Package APK
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Initialize Gradle Wrapper
+        run: |
+          gradle wrapper
+          chmod +x gradlew
+
+      - name: Build Debug APK
+        if: "${{ github.event.inputs.build_type != 'release' }}"
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Build Release APK
+        if: "${{ github.event.inputs.build_type == 'release' }}"
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Locate Output APKs
+        id: find_apks
+        run: |
+          echo "Listing all generated APK files:"
+          find app/build/outputs/apk -name "*.apk"
+          echo "apk_path=$(find app/build/outputs/apk -name '*.apk' | head -n 1)" >> $GITHUB_OUTPUT
+
+      - name: Upload APK as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/**/*.apk
+          retention-days: 14
+
+      - name: Publish GitHub Release (on Tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/**/*.apk
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
