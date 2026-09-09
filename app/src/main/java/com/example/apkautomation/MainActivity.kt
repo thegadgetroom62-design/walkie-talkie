@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Refresh
@@ -58,6 +59,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.apkautomation.bluetooth.BluetoothVoiceManager
 import com.example.apkautomation.bluetooth.ConnectionState
+import com.example.apkautomation.mapper.FloorPlanMapScreen
+import com.example.apkautomation.mapper.WifiMapperEngine
 import com.example.apkautomation.radar.RadarScreen
 import com.example.apkautomation.radar.WifiRadarEngine
 import com.example.apkautomation.wifi.WifiDirectVoiceManager
@@ -65,7 +68,8 @@ import com.example.apkautomation.wifi.WifiDirectVoiceManager
 enum class CommsMode {
     BLUETOOTH,
     WIFI_DIRECT,
-    WIFI_RADAR
+    WIFI_RADAR,
+    WIFI_MAPPER
 }
 
 class MainActivity : ComponentActivity() {
@@ -73,6 +77,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var btVoiceManager: BluetoothVoiceManager
     private lateinit var wifiVoiceManager: WifiDirectVoiceManager
     private lateinit var radarEngine: WifiRadarEngine
+    private lateinit var mapperEngine: WifiMapperEngine
     private var bluetoothAdapter: BluetoothAdapter? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,6 +90,7 @@ class MainActivity : ComponentActivity() {
         wifiVoiceManager = WifiDirectVoiceManager(this, lifecycleScope)
         wifiVoiceManager.initialize()
         radarEngine = WifiRadarEngine(this, lifecycleScope)
+        mapperEngine = WifiMapperEngine(this, lifecycleScope)
 
         setContent {
             MaterialTheme(
@@ -103,6 +109,7 @@ class MainActivity : ComponentActivity() {
                         btManager = btVoiceManager,
                         wifiManager = wifiVoiceManager,
                         radarEngine = radarEngine,
+                        mapperEngine = mapperEngine,
                         bluetoothAdapter = bluetoothAdapter,
                         checkPermissions = { hasRequiredPermissions() }
                     )
@@ -117,6 +124,7 @@ class MainActivity : ComponentActivity() {
         wifiVoiceManager.disconnect()
         wifiVoiceManager.unregister()
         radarEngine.stopRadar()
+        mapperEngine.stopMapping()
     }
 
     private fun hasRequiredPermissions(): Boolean {
@@ -143,6 +151,7 @@ fun WalkieTalkieApp(
     btManager: BluetoothVoiceManager,
     wifiManager: WifiDirectVoiceManager,
     radarEngine: WifiRadarEngine,
+    mapperEngine: WifiMapperEngine,
     bluetoothAdapter: BluetoothAdapter?,
     checkPermissions: () -> Boolean
 ) {
@@ -319,13 +328,30 @@ fun WalkieTalkieApp(
                         onClick = {
                             btManager.disconnect()
                             wifiManager.disconnect()
+                            mapperEngine.stopMapping()
                             selectedMode = CommsMode.WIFI_RADAR
                         },
                         text = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Sensors, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Radar", fontSize = 12.sp)
+                                Icon(Icons.Default.Sensors, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Radar", fontSize = 11.sp)
+                            }
+                        }
+                    )
+                    Tab(
+                        selected = selectedMode == CommsMode.WIFI_MAPPER,
+                        onClick = {
+                            btManager.disconnect()
+                            wifiManager.disconnect()
+                            radarEngine.stopRadar()
+                            selectedMode = CommsMode.WIFI_MAPPER
+                        },
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("Mapper", fontSize = 11.sp)
                             }
                         }
                     )
@@ -355,6 +381,11 @@ fun WalkieTalkieApp(
                     CommsMode.WIFI_RADAR -> {
                         RadarScreen(
                             radarEngine = radarEngine
+                        )
+                    }
+                    CommsMode.WIFI_MAPPER -> {
+                        FloorPlanMapScreen(
+                            mapperEngine = mapperEngine
                         )
                     }
                 }
