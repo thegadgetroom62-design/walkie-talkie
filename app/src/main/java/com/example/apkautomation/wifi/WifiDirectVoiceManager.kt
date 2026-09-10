@@ -1,4 +1,4 @@
-﻿package com.example.apkautomation.wifi
+package com.example.apkautomation.wifi
 
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
@@ -95,6 +95,15 @@ class WifiDirectVoiceManager(
 
     private var targetPeerAddress: InetAddress? = null
     private var isGroupOwner = false
+
+    private val _peerAddressFlow = MutableStateFlow<InetAddress?>(null)
+    val peerAddressFlow = _peerAddressFlow.asStateFlow()
+
+    private val _isGroupOwnerFlow = MutableStateFlow(false)
+    val isGroupOwnerFlow = _isGroupOwnerFlow.asStateFlow()
+
+    private val _isFullDuplexVoice = MutableStateFlow(false)
+    val isFullDuplexVoice = _isFullDuplexVoice.asStateFlow()
 
     private var udpSocket: DatagramSocket? = null
     private var tcpServerSocket: ServerSocket? = null
@@ -258,6 +267,7 @@ class WifiDirectVoiceManager(
         if (!info.groupFormed) return
 
         isGroupOwner = info.isGroupOwner
+        _isGroupOwnerFlow.value = isGroupOwner
         _connectionState.value = ConnectionState.CONNECTED
 
         // Ensure Audio subsystem is in Communication mode so mic + speaker are active
@@ -270,6 +280,7 @@ class WifiDirectVoiceManager(
 
         if (!isGroupOwner) {
             targetPeerAddress = info.groupOwnerAddress
+            _peerAddressFlow.value = info.groupOwnerAddress
             _statusMessage.value = "Connected (Peer: ${info.groupOwnerAddress.hostAddress})"
             startTcpClientHandshake(info.groupOwnerAddress)
         } else {
@@ -297,6 +308,7 @@ class WifiDirectVoiceManager(
                         val clientSocket = tcpServerSocket?.accept() ?: break
                         val clientIp = clientSocket.inetAddress
                         targetPeerAddress = clientIp
+                        _peerAddressFlow.value = clientIp
                         _statusMessage.value = "Channel Active (${clientIp.hostAddress})"
                         val out = clientSocket.getOutputStream()
                         out.write(byteArrayOf(1))
@@ -328,6 +340,7 @@ class WifiDirectVoiceManager(
                     input.read()
                     socket.close()
                     targetPeerAddress = hostAddress
+                    _peerAddressFlow.value = hostAddress
                     _statusMessage.value = "Channel Active (${hostAddress.hostAddress})"
                     break
                 } catch (e: Exception) {
@@ -443,6 +456,7 @@ class WifiDirectVoiceManager(
                     // 2. Lock onto the peer's exact IP address
                     if (targetPeerAddress == null || targetPeerAddress != packet.address) {
                         targetPeerAddress = packet.address
+                        _peerAddressFlow.value = packet.address
                         _statusMessage.value = "Channel Active (${packet.address.hostAddress})"
                     }
 
@@ -667,9 +681,24 @@ class WifiDirectVoiceManager(
         wifiP2pManager?.removeGroup(channel, null)
 
         targetPeerAddress = null
+        _peerAddressFlow.value = null
+        _isGroupOwnerFlow.value = false
+        _isFullDuplexVoice.value = false
         _connectedDeviceName.value = null
         _connectionState.value = ConnectionState.IDLE
         _isReceiving.value = false
         _statusMessage.value = "Wi-Fi Direct disconnected"
+    }
+
+    fun startFullDuplexVoice() {
+        if (_isFullDuplexVoice.value) return
+        _isFullDuplexVoice.value = true
+        startTalking()
+    }
+
+    fun stopFullDuplexVoice() {
+        if (!_isFullDuplexVoice.value) return
+        _isFullDuplexVoice.value = false
+        stopTalking()
     }
 }

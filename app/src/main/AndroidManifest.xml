@@ -34,7 +34,19 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="tiramisu" />
 
+    <!-- Camera permissions for Video Call -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <!-- Hardware requirements -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.flash"
+        android:required="false" />
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="false" />

@@ -66,6 +66,8 @@ import com.example.apkautomation.mapper.WifiMapperEngine
 import com.example.apkautomation.radar.RadarScreen
 import com.example.apkautomation.radar.WifiRadarEngine
 import com.example.apkautomation.ui.*
+import com.example.apkautomation.video.VideoCallScreen
+import com.example.apkautomation.video.WifiVideoManager
 import com.example.apkautomation.wifi.WifiDirectVoiceManager
 
 enum class CommsTransport(val label: String) {
@@ -77,6 +79,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var btVoiceManager: BluetoothVoiceManager
     private lateinit var wifiVoiceManager: WifiDirectVoiceManager
+    private lateinit var videoManager: WifiVideoManager
     private lateinit var radarEngine: WifiRadarEngine
     private lateinit var mapperEngine: WifiMapperEngine
     private var bluetoothAdapter: BluetoothAdapter? = null
@@ -90,6 +93,7 @@ class MainActivity : ComponentActivity() {
         btVoiceManager = BluetoothVoiceManager(this, bluetoothAdapter, lifecycleScope)
         wifiVoiceManager = WifiDirectVoiceManager(this, lifecycleScope)
         wifiVoiceManager.initialize()
+        videoManager = WifiVideoManager(this, lifecycleScope)
         radarEngine = WifiRadarEngine(this, lifecycleScope)
         mapperEngine = WifiMapperEngine(this, lifecycleScope)
 
@@ -112,6 +116,7 @@ class MainActivity : ComponentActivity() {
                     WalkieTalkieApp(
                         btManager = btVoiceManager,
                         wifiManager = wifiVoiceManager,
+                        videoManager = videoManager,
                         radarEngine = radarEngine,
                         mapperEngine = mapperEngine,
                         bluetoothAdapter = bluetoothAdapter,
@@ -127,6 +132,7 @@ class MainActivity : ComponentActivity() {
         btVoiceManager.disconnect()
         wifiVoiceManager.disconnect()
         wifiVoiceManager.unregister()
+        videoManager.stopVideoCall()
         radarEngine.stopRadar()
         mapperEngine.stopMapping()
     }
@@ -134,6 +140,7 @@ class MainActivity : ComponentActivity() {
     private fun hasRequiredPermissions(): Boolean {
         val permissions = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CAMERA,
             Manifest.permission.ACCESS_FINE_LOCATION
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -157,6 +164,7 @@ class MainActivity : ComponentActivity() {
 fun WalkieTalkieApp(
     btManager: BluetoothVoiceManager,
     wifiManager: WifiDirectVoiceManager,
+    videoManager: WifiVideoManager,
     radarEngine: WifiRadarEngine,
     mapperEngine: WifiMapperEngine,
     bluetoothAdapter: BluetoothAdapter?,
@@ -165,6 +173,8 @@ fun WalkieTalkieApp(
     var hasPermissions by remember { mutableStateOf(checkPermissions()) }
     var activeNavTab by remember { mutableStateOf(NavDestination.COMMS) }
     var commsTransport by remember { mutableStateOf(CommsTransport.BLUETOOTH) }
+    var isVideoCallActive by remember { mutableStateOf(false) }
+    var isMicMuted by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -175,6 +185,7 @@ fun WalkieTalkieApp(
     val requestPermissions = {
         val perms = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CAMERA,
             Manifest.permission.ACCESS_FINE_LOCATION
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -200,6 +211,7 @@ fun WalkieTalkieApp(
     LaunchedEffect(securityPin) {
         btManager.updateSecurityPin(securityPin)
         wifiManager.updateSecurityPin(securityPin)
+        videoManager.updateSecurityPin(securityPin)
     }
 
     Scaffold(
@@ -315,6 +327,34 @@ fun WalkieTalkieApp(
                     ) {
                         if (!hasPermissions) {
                             PermissionRequestCard(onRequest = requestPermissions)
+                        } else if (isWifiConnected && isVideoCallActive) {
+                            val peerIp by wifiManager.peerAddressFlow.collectAsState()
+                            val isGroupOwner by wifiManager.isGroupOwnerFlow.collectAsState()
+                            val devName by wifiManager.connectedDeviceName.collectAsState()
+                            val isSpk by wifiManager.isSpeakerphone.collectAsState()
+
+                            VideoCallScreen(
+                                videoManager = videoManager,
+                                peerName = devName ?: "Peer Phone",
+                                peerIp = peerIp,
+                                isGroupOwner = isGroupOwner,
+                                isSpeakerphone = isSpk,
+                                isMuted = isMicMuted,
+                                onToggleSpeaker = { wifiManager.toggleSpeakerphone() },
+                                onToggleMute = {
+                                    isMicMuted = !isMicMuted
+                                    if (isMicMuted) {
+                                        wifiManager.stopFullDuplexVoice()
+                                    } else {
+                                        wifiManager.startFullDuplexVoice()
+                                    }
+                                },
+                                onEndCall = {
+                                    isVideoCallActive = false
+                                    videoManager.stopVideoCall()
+                                    wifiManager.stopFullDuplexVoice()
+                                }
+                            )
                         } else if (isBtConnected) {
                             val devName by btManager.connectedDeviceName.collectAsState()
                             val isTx by btManager.isTransmitting.collectAsState()
@@ -353,7 +393,15 @@ fun WalkieTalkieApp(
                                 onStopTalking = { wifiManager.stopTalking() },
                                 onToggleSpeaker = { wifiManager.toggleSpeakerphone() },
                                 onOpenSecuritySettings = { activeNavTab = NavDestination.VAULT },
-                                onDisconnect = { wifiManager.disconnect() }
+                                onStartVideoCall = {
+                                    isVideoCallActive = true
+                                    wifiManager.startFullDuplexVoice()
+                                },
+                                onDisconnect = {
+                                    isVideoCallActive = false
+                                    videoManager.stopVideoCall()
+                                    wifiManager.disconnect()
+                                }
                             )
                         } else {
                             // Sleek segmented pill switcher
@@ -780,6 +828,7 @@ fun ActiveCallScreen(
     onStopTalking: () -> Unit,
     onToggleSpeaker: () -> Unit,
     onOpenSecuritySettings: () -> Unit,
+    onStartVideoCall: (() -> Unit)? = null,
     onDisconnect: () -> Unit
 ) {
     Column(
@@ -875,19 +924,39 @@ fun ActiveCallScreen(
             onStopTalking = onStopTalking
         )
 
-        // Bottom: Disconnect Cockpit Control
-        Button(
-            onClick = onDisconnect,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = ProTheme.CrimsonDark.copy(alpha = 0.6f)),
-            border = BorderStroke(1.dp, ProTheme.Crimson),
-            shape = RoundedCornerShape(14.dp)
+        // Bottom Controls
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Icon(Icons.Default.Close, contentDescription = null, tint = ProTheme.Crimson)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Disconnect Link", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            if (onStartVideoCall != null) {
+                Button(
+                    onClick = onStartVideoCall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ProTheme.SkyBlue),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Default.Videocam, contentDescription = null, tint = Color.Black)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Start Full-Duplex Video Call", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            }
+
+            Button(
+                onClick = onDisconnect,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = ProTheme.CrimsonDark.copy(alpha = 0.6f)),
+                border = BorderStroke(1.dp, ProTheme.Crimson),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = null, tint = ProTheme.Crimson)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Disconnect Link", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
         }
     }
 }
