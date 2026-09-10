@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.SettingsBluetooth
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.WifiTethering
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -61,6 +62,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.apkautomation.bluetooth.BluetoothVoiceManager
 import com.example.apkautomation.bluetooth.ConnectionState
+import com.example.apkautomation.global.DirectIpCommsManager
+import com.example.apkautomation.global.DirectIpSetupScreen
+import com.example.apkautomation.global.DirectIpState
 import com.example.apkautomation.mapper.FloorPlanMapScreen
 import com.example.apkautomation.mapper.WifiMapperEngine
 import com.example.apkautomation.radar.RadarScreen
@@ -71,14 +75,16 @@ import com.example.apkautomation.video.WifiVideoManager
 import com.example.apkautomation.wifi.WifiDirectVoiceManager
 
 enum class CommsTransport(val label: String) {
-    BLUETOOTH("Bluetooth (2.4 GHz)"),
-    WIFI_DIRECT("Wi-Fi Direct (P2P)")
+    BLUETOOTH("Bluetooth"),
+    WIFI_DIRECT("Wi-Fi Mesh"),
+    DIRECT_IP("Direct-IP Global")
 }
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var btVoiceManager: BluetoothVoiceManager
     private lateinit var wifiVoiceManager: WifiDirectVoiceManager
+    private lateinit var directIpManager: DirectIpCommsManager
     private lateinit var videoManager: WifiVideoManager
     private lateinit var radarEngine: WifiRadarEngine
     private lateinit var mapperEngine: WifiMapperEngine
@@ -93,6 +99,7 @@ class MainActivity : ComponentActivity() {
         btVoiceManager = BluetoothVoiceManager(this, bluetoothAdapter, lifecycleScope)
         wifiVoiceManager = WifiDirectVoiceManager(this, lifecycleScope)
         wifiVoiceManager.initialize()
+        directIpManager = DirectIpCommsManager(this, lifecycleScope)
         videoManager = WifiVideoManager(this, lifecycleScope)
         radarEngine = WifiRadarEngine(this, lifecycleScope)
         mapperEngine = WifiMapperEngine(this, lifecycleScope)
@@ -116,6 +123,7 @@ class MainActivity : ComponentActivity() {
                     WalkieTalkieApp(
                         btManager = btVoiceManager,
                         wifiManager = wifiVoiceManager,
+                        directIpManager = directIpManager,
                         videoManager = videoManager,
                         radarEngine = radarEngine,
                         mapperEngine = mapperEngine,
@@ -132,6 +140,7 @@ class MainActivity : ComponentActivity() {
         btVoiceManager.disconnect()
         wifiVoiceManager.disconnect()
         wifiVoiceManager.unregister()
+        directIpManager.disconnect()
         videoManager.stopVideoCall()
         radarEngine.stopRadar()
         mapperEngine.stopMapping()
@@ -164,6 +173,7 @@ class MainActivity : ComponentActivity() {
 fun WalkieTalkieApp(
     btManager: BluetoothVoiceManager,
     wifiManager: WifiDirectVoiceManager,
+    directIpManager: DirectIpCommsManager,
     videoManager: WifiVideoManager,
     radarEngine: WifiRadarEngine,
     mapperEngine: WifiMapperEngine,
@@ -203,6 +213,8 @@ fun WalkieTalkieApp(
 
     val isBtConnected = (btManager.connectionState.collectAsState().value == ConnectionState.CONNECTED)
     val isWifiConnected = (wifiManager.connectionState.collectAsState().value == ConnectionState.CONNECTED)
+    val isDirectIpConnected = (directIpManager.connectionState.collectAsState().value == DirectIpState.CONNECTED)
+    val isAnyConnected = isBtConnected || isWifiConnected || isDirectIpConnected
 
     val context = LocalContext.current
     val sharedPrefs = remember { context.getSharedPreferences("walkie_prefs", Context.MODE_PRIVATE) }
@@ -211,6 +223,7 @@ fun WalkieTalkieApp(
     LaunchedEffect(securityPin) {
         btManager.updateSecurityPin(securityPin)
         wifiManager.updateSecurityPin(securityPin)
+        directIpManager.updateSecurityPin(securityPin)
         videoManager.updateSecurityPin(securityPin)
     }
 
@@ -257,15 +270,15 @@ fun WalkieTalkieApp(
                                     modifier = Modifier
                                         .size(6.dp)
                                         .clip(CircleShape)
-                                        .background(if (isBtConnected || isWifiConnected) ProTheme.Emerald else ProTheme.SkyBlue)
+                                        .background(if (isAnyConnected) ProTheme.Emerald else ProTheme.SkyBlue)
                                 )
                                 Spacer(modifier = Modifier.width(5.dp))
                                 Text(
-                                    text = if (isBtConnected || isWifiConnected) "OFF-GRID SECURE LINK" else "STANDBY (ZERO-CLOUD)",
+                                    text = if (isAnyConnected) "SECURE DIRECT LINK" else "STANDBY (ZERO-CLOUD)",
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = FontFamily.Monospace,
-                                    color = if (isBtConnected || isWifiConnected) ProTheme.Emerald else ProTheme.TextMuted
+                                    color = if (isAnyConnected) ProTheme.Emerald else ProTheme.TextMuted
                                 )
                             }
                         }
@@ -401,23 +414,57 @@ fun WalkieTalkieApp(
                                     wifiManager.disconnect()
                                 }
                             )
+                        } else if (isDirectIpConnected) {
+                            val peerIp by directIpManager.peerIp.collectAsState()
+                            val isTx by directIpManager.isTransmitting.collectAsState()
+                            val isRx by directIpManager.isReceiving.collectAsState()
+                            val isSpk by directIpManager.isSpeakerphone.collectAsState()
+                            val status by directIpManager.statusMessage.collectAsState()
+
+                            ActiveCallScreen(
+                                modeLabel = "Global Direct-IP (Serverless P2P)",
+                                deviceName = peerIp ?: "Remote Node",
+                                isTransmitting = isTx,
+                                isReceiving = isRx,
+                                isSpeakerphone = isSpk,
+                                statusMessage = status,
+                                onStartTalking = { directIpManager.startTalking() },
+                                onStopTalking = { directIpManager.stopTalking() },
+                                onToggleSpeaker = { directIpManager.toggleSpeakerphone() },
+                                onOpenSecuritySettings = { activeNavTab = NavDestination.VAULT },
+                                onDisconnect = { directIpManager.disconnect() }
+                            )
                         } else {
                             // Sleek segmented pill switcher
                             SegmentedPillSwitcher(
-                                options = listOf(CommsTransport.BLUETOOTH, CommsTransport.WIFI_DIRECT),
+                                options = listOf(CommsTransport.BLUETOOTH, CommsTransport.WIFI_DIRECT, CommsTransport.DIRECT_IP),
                                 selectedOption = commsTransport,
                                 onOptionSelected = { transport ->
-                                    if (transport == CommsTransport.BLUETOOTH) {
-                                        wifiManager.disconnect()
-                                    } else {
-                                        btManager.disconnect()
-                                        wifiManager.startPeerDiscovery()
+                                    when (transport) {
+                                        CommsTransport.BLUETOOTH -> {
+                                            wifiManager.disconnect()
+                                            directIpManager.disconnect()
+                                        }
+                                        CommsTransport.WIFI_DIRECT -> {
+                                            btManager.disconnect()
+                                            directIpManager.disconnect()
+                                            wifiManager.startPeerDiscovery()
+                                        }
+                                        CommsTransport.DIRECT_IP -> {
+                                            btManager.disconnect()
+                                            wifiManager.disconnect()
+                                            directIpManager.refreshLocalIp()
+                                        }
                                     }
                                     commsTransport = transport
                                 },
                                 labelProvider = { it.label },
                                 iconProvider = {
-                                    if (it == CommsTransport.BLUETOOTH) Icons.Default.Bluetooth else Icons.Default.Wifi
+                                    when (it) {
+                                        CommsTransport.BLUETOOTH -> Icons.Default.Bluetooth
+                                        CommsTransport.WIFI_DIRECT -> Icons.Default.Wifi
+                                        CommsTransport.DIRECT_IP -> Icons.Default.Language
+                                    }
                                 }
                             )
 
@@ -439,6 +486,9 @@ fun WalkieTalkieApp(
                                 }
                                 CommsTransport.WIFI_DIRECT -> {
                                     WifiDirectSetupScreen(wifiManager = wifiManager)
+                                }
+                                CommsTransport.DIRECT_IP -> {
+                                    DirectIpSetupScreen(directIpManager = directIpManager)
                                 }
                             }
                         }
@@ -471,30 +521,58 @@ fun WifiDirectSetupScreen(
     val statusMessage by wifiManager.statusMessage.collectAsState()
     val discoveredPeers by wifiManager.discoveredPeers.collectAsState()
     val connState by wifiManager.connectionState.collectAsState()
+    val activeMeshNodes by wifiManager.activeMeshNodes.collectAsState()
 
-    BentoCard {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(
-                        when (connState) {
-                            ConnectionState.CONNECTING -> ProTheme.SkyBlue
-                            else -> ProTheme.Emerald
-                        }
-                    )
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(
-                text = statusMessage,
-                color = ProTheme.TextPrimary,
-                fontWeight = FontWeight.Medium,
-                fontSize = 13.sp
-            )
+    BentoCard(title = "TACTICAL WI-FI DIRECT MESH", subtitle = "Multi-peer off-grid daisy chain relay") {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when (connState) {
+                                ConnectionState.CONNECTING -> ProTheme.SkyBlue
+                                ConnectionState.CONNECTED -> ProTheme.Emerald
+                                else -> ProTheme.TextSecondary
+                            }
+                        )
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = statusMessage,
+                    color = ProTheme.TextPrimary,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.sp
+                )
+            }
+
+            if (activeMeshNodes.isNotEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = ProTheme.SurfaceCardElevated,
+                    border = BorderStroke(0.8.dp, ProTheme.Emerald)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.WifiTethering, contentDescription = null, tint = ProTheme.Emerald, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Tactical Mesh: ${activeMeshNodes.size + 1} Nodes Connected (Daisy-Chain Ready)",
+                            color = ProTheme.Emerald,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         }
     }
 

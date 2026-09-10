@@ -110,6 +110,9 @@ class WifiDirectVoiceManager(
     private val _isVideoCallActive = MutableStateFlow(false)
     val isVideoCallActive = _isVideoCallActive.asStateFlow()
 
+    val meshRouter = WifiMeshRouter(localSenderId, "Node-${localSenderId % 1000}")
+    val activeMeshNodes = meshRouter.meshNodes
+
     private var udpSocket: DatagramSocket? = null
     private var tcpServerSocket: ServerSocket? = null
     private var audioRecord: AudioRecord? = null
@@ -363,6 +366,7 @@ class WifiDirectVoiceManager(
         heartbeatJob = scope.launch(Dispatchers.IO) {
             while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
                 try {
+                    meshRouter.pruneStaleNodes()
                     targetPeerAddress?.let { target ->
                         sendPacket(PKT_PING, target, ByteArray(0))
                     }
@@ -372,17 +376,30 @@ class WifiDirectVoiceManager(
         }
     }
 
-    private fun sendPacket(type: Byte, address: InetAddress, payload: ByteArray, payloadLength: Int = payload.size) {
+    private fun sendPacket(
+        type: Byte,
+        address: InetAddress,
+        payload: ByteArray,
+        payloadLength: Int = payload.size,
+        originId: Int = localSenderId,
+        seq: Int = meshRouter.nextSequenceNumber(),
+        hops: Byte = WifiMeshRouter.MAX_HOPS
+    ) {
         val socket = udpSocket ?: return
-        val buffer = ByteArray(5 + payloadLength)
+        val buffer = ByteArray(10 + payloadLength)
         buffer[0] = type
-        buffer[1] = ((localSenderId shr 24) and 0xFF).toByte()
-        buffer[2] = ((localSenderId shr 16) and 0xFF).toByte()
-        buffer[3] = ((localSenderId shr 8) and 0xFF).toByte()
-        buffer[4] = (localSenderId and 0xFF).toByte()
+        buffer[1] = ((originId shr 24) and 0xFF).toByte()
+        buffer[2] = ((originId shr 16) and 0xFF).toByte()
+        buffer[3] = ((originId shr 8) and 0xFF).toByte()
+        buffer[4] = (originId and 0xFF).toByte()
+        buffer[5] = ((seq shr 24) and 0xFF).toByte()
+        buffer[6] = ((seq shr 16) and 0xFF).toByte()
+        buffer[7] = ((seq shr 8) and 0xFF).toByte()
+        buffer[8] = (seq and 0xFF).toByte()
+        buffer[9] = hops
 
         if (payloadLength > 0) {
-            System.arraycopy(payload, 0, buffer, 5, payloadLength)
+            System.arraycopy(payload, 0, buffer, 10, payloadLength)
         }
 
         try {
@@ -448,21 +465,40 @@ class WifiDirectVoiceManager(
                     if (packet.length < 5) continue
 
                     val packetType = buffer[0]
-                    val senderId = ((buffer[1].toInt() and 0xFF) shl 24) or
+                    val originSenderId = ((buffer[1].toInt() and 0xFF) shl 24) or
                             ((buffer[2].toInt() and 0xFF) shl 16) or
                             ((buffer[3].toInt() and 0xFF) shl 8) or
                             (buffer[4].toInt() and 0xFF)
 
                     // 1. FILTER OUT SELF-ECHO
-                    if (senderId == localSenderId) {
+                    if (originSenderId == localSenderId) {
                         continue
                     }
 
-                    // 2. Lock onto the peer's exact IP address
+                    val isMesh = (packet.length >= 10)
+                    val seqNum = if (isMesh) {
+                        ((buffer[5].toInt() and 0xFF) shl 24) or
+                        ((buffer[6].toInt() and 0xFF) shl 16) or
+                        ((buffer[7].toInt() and 0xFF) shl 8) or
+                        (buffer[8].toInt() and 0xFF)
+                    } else 0
+                    val hopCount = if (isMesh) buffer[9] else 1.toByte()
+                    val payloadOffset = if (isMesh) 10 else 5
+                    val payloadLength = packet.length - payloadOffset
+
+                    // 2. Loop prevention & de-duplication
+                    if (isMesh && !meshRouter.checkAndRecordPacket(originSenderId, seqNum)) {
+                        continue
+                    }
+
+                    // 3. Register node in mesh topology
+                    meshRouter.registerNode(originSenderId, "Node-${originSenderId % 1000}", (WifiMeshRouter.MAX_HOPS - hopCount + 1), packet.address)
+
+                    // 4. Lock onto the peer's exact IP address
                     if (targetPeerAddress == null || targetPeerAddress != packet.address) {
                         targetPeerAddress = packet.address
                         _peerAddressFlow.value = packet.address
-                        _statusMessage.value = "Channel Active (${packet.address.hostAddress})"
+                        _statusMessage.value = "Mesh Active (${packet.address.hostAddress})"
                     }
 
                     when (packetType) {
@@ -474,17 +510,16 @@ class WifiDirectVoiceManager(
                             // Heartbeat confirmed
                         }
                         PKT_AUDIO -> {
-                            val payloadLength = packet.length - 5
                             if (payloadLength > 16) {
                                 var audioBytes: ByteArray? = null
                                 try {
-                                    audioBytes = voiceEncryptor.decrypt(packet.data, 5, payloadLength)
+                                    audioBytes = voiceEncryptor.decrypt(packet.data, payloadOffset, payloadLength)
                                 } catch (_: Exception) {}
 
                                 // Fallback: If decryption fails, attempt raw audio pass to avoid silent failure
                                 if (audioBytes == null && payloadLength > 0) {
                                     audioBytes = ByteArray(payloadLength)
-                                    System.arraycopy(packet.data, 5, audioBytes, 0, payloadLength)
+                                    System.arraycopy(packet.data, payloadOffset, audioBytes, 0, payloadLength)
                                 }
 
                                 if (audioBytes != null && audioBytes.isNotEmpty()) {
@@ -502,11 +537,33 @@ class WifiDirectVoiceManager(
                             stopFullDuplexVoice()
                         }
                     }
+
+                    // 5. Multi-Hop Forwarding across daisy chain
+                    if (isMesh && hopCount > 1) {
+                        relayMeshPacket(buffer, packet.length, (hopCount - 1).toByte(), packet.address)
+                    }
                 } catch (e: IOException) {
                     break
                 }
             }
             _isReceiving.value = false
+        }
+    }
+
+    private fun relayMeshPacket(data: ByteArray, length: Int, nextHops: Byte, incomingAddr: InetAddress) {
+        val socket = udpSocket ?: return
+        val relayBuffer = ByteArray(length)
+        System.arraycopy(data, 0, relayBuffer, 0, length)
+        relayBuffer[9] = nextHops
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                val broadcastAddr = InetAddress.getByName("192.168.49.255")
+                if (broadcastAddr != incomingAddr) {
+                    val p = DatagramPacket(relayBuffer, length, broadcastAddr, VOICE_PORT)
+                    socket.send(p)
+                }
+            } catch (_: Exception) {}
         }
     }
 
@@ -694,6 +751,7 @@ class WifiDirectVoiceManager(
         wifiP2pManager?.removeGroup(channel, null)
 
         targetPeerAddress = null
+        meshRouter.clear()
         _peerAddressFlow.value = null
         _isGroupOwnerFlow.value = false
         _isFullDuplexVoice.value = false
