@@ -938,7 +938,7 @@ fun ActiveCallScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = ProTheme.SkyBlue),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Icon(Icons.Default.Videocam, contentDescription = null, tint = Color.Black)
+                    Icon(Icons.Default.PhoneInTalk, contentDescription = null, tint = Color.Black)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Start Full-Duplex Video Call", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }

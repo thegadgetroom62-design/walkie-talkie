@@ -454,7 +454,7 @@ class WifiVideoManager(
                     inStream.readFully(encryptedFrame)
 
                     // Decrypt with AES-256 CTR using Vault PIN
-                    val decryptedFrame = voiceEncryptor.decrypt(encryptedFrame)
+                    val decryptedFrame = voiceEncryptor.decrypt(encryptedFrame) ?: continue
 
                     // Feed decrypted NAL into hardware decoder
                     val inIndex = decoder.dequeueInputBuffer(10000)
