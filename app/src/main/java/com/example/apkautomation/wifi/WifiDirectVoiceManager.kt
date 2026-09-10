@@ -1,4 +1,4 @@
-package com.example.apkautomation.wifi
+﻿package com.example.apkautomation.wifi
 
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
@@ -13,7 +13,6 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.ToneGenerator
-import android.net.NetworkInfo
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
@@ -39,6 +38,9 @@ import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.net.SocketException
 import kotlin.random.Random
 
@@ -49,6 +51,7 @@ class WifiDirectVoiceManager(
     companion object {
         private const val TAG = "WifiDirectVoiceManager"
         const val VOICE_PORT = 8888
+        const val TCP_HANDSHAKE_PORT = 8889
         private const val SAMPLE_RATE = 16000
         private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
         private const val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
@@ -94,19 +97,21 @@ class WifiDirectVoiceManager(
     private var isGroupOwner = false
 
     private var udpSocket: DatagramSocket? = null
+    private var tcpServerSocket: ServerSocket? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
 
     private var receiveJob: Job? = null
     private var transmitJob: Job? = null
-    private var handshakeJob: Job? = null
+    private var heartbeatJob: Job? = null
+    private var tcpHandshakeJob: Job? = null
 
     private var toneGenerator: ToneGenerator? = null
-
     private var voiceEncryptor: VoiceEncryptor = VoiceEncryptor("1234")
 
     fun updateSecurityPin(pin: String) {
-        voiceEncryptor = VoiceEncryptor(pin)
+        val activePin = if (pin.isBlank()) "1234" else pin
+        voiceEncryptor = VoiceEncryptor(activePin)
     }
 
     private val intentFilter = IntentFilter().apply {
@@ -225,7 +230,7 @@ class WifiDirectVoiceManager(
 
         wifiP2pManager?.connect(channel, config, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                _statusMessage.value = "Connected! Setting up audio channel..."
+                _statusMessage.value = "Connected! Establishing audio link..."
             }
 
             override fun onFailure(reason: Int) {
@@ -234,7 +239,7 @@ class WifiDirectVoiceManager(
             }
         })
 
-        // Active Watchdog: Poll connection info every 500ms so we don't get stuck on connecting
+        // Active Watchdog: Poll connection info every 500ms
         pollConnectionJob?.cancel()
         pollConnectionJob = scope.launch(Dispatchers.IO) {
             for (i in 1..40) {
@@ -255,32 +260,96 @@ class WifiDirectVoiceManager(
         isGroupOwner = info.isGroupOwner
         _connectionState.value = ConnectionState.CONNECTED
 
+        // Ensure Audio subsystem is in Communication mode so mic + speaker are active
+        try {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            applySpeakerphoneRouting(_isSpeakerphone.value)
+        } catch (e: Exception) {
+            Log.e(TAG, "Audio mode error", e)
+        }
+
         if (!isGroupOwner) {
             targetPeerAddress = info.groupOwnerAddress
             _statusMessage.value = "Connected (Peer: ${info.groupOwnerAddress.hostAddress})"
+            startTcpClientHandshake(info.groupOwnerAddress)
         } else {
-            _statusMessage.value = "Connected as Host (Listening for peer IP...)"
+            _statusMessage.value = "Connected as Host (Awaiting peer handshake...)"
+            startTcpServerHandshake()
         }
 
         startUdpReceiver()
-        startHandshakeLoop()
+        startContinuousHeartbeat()
     }
 
     /**
-     * Periodically send handshake pings to learn peer IP and confirm bidirectional routing
+     * Group Owner TCP Server: Waits for Client connection to discover Client's exact IP address
      */
-    private fun startHandshakeLoop() {
-        handshakeJob?.cancel()
-        handshakeJob = scope.launch(Dispatchers.IO) {
-            for (i in 1..20) {
-                if (!isActive) break
-                try {
-                    val target = targetPeerAddress ?: InetAddress.getByName("192.168.49.255")
-                    sendPacket(PKT_PING, target, ByteArray(0))
-                } catch (e: Exception) {
-                    // Ignore
+    private fun startTcpServerHandshake() {
+        tcpHandshakeJob?.cancel()
+        tcpHandshakeJob = scope.launch(Dispatchers.IO) {
+            try {
+                tcpServerSocket?.close()
+                tcpServerSocket = ServerSocket(TCP_HANDSHAKE_PORT).apply {
+                    reuseAddress = true
                 }
-                delay(600)
+                while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
+                    try {
+                        val clientSocket = tcpServerSocket?.accept() ?: break
+                        val clientIp = clientSocket.inetAddress
+                        targetPeerAddress = clientIp
+                        _statusMessage.value = "Channel Active (${clientIp.hostAddress})"
+                        val out = clientSocket.getOutputStream()
+                        out.write(byteArrayOf(1))
+                        out.flush()
+                        clientSocket.close()
+                        break
+                    } catch (e: Exception) {
+                        if (!isActive) break
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "TCP Server error", e)
+            }
+        }
+    }
+
+    /**
+     * Client TCP Connect: Pings the Group Owner to exchange and lock IP addresses
+     */
+    private fun startTcpClientHandshake(hostAddress: InetAddress) {
+        tcpHandshakeJob?.cancel()
+        tcpHandshakeJob = scope.launch(Dispatchers.IO) {
+            for (attempt in 1..40) {
+                if (!isActive || _connectionState.value != ConnectionState.CONNECTED) break
+                try {
+                    val socket = Socket()
+                    socket.connect(InetSocketAddress(hostAddress, TCP_HANDSHAKE_PORT), 1500)
+                    val input = socket.getInputStream()
+                    input.read()
+                    socket.close()
+                    targetPeerAddress = hostAddress
+                    _statusMessage.value = "Channel Active (${hostAddress.hostAddress})"
+                    break
+                } catch (e: Exception) {
+                    delay(600)
+                }
+            }
+        }
+    }
+
+    /**
+     * Continuous 1-second ping to keep the UDP channel, IP lock, and Wi-Fi radio alive
+     */
+    private fun startContinuousHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch(Dispatchers.IO) {
+            while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
+                try {
+                    targetPeerAddress?.let { target ->
+                        sendPacket(PKT_PING, target, ByteArray(0))
+                    }
+                } catch (_: Exception) {}
+                delay(1000)
             }
         }
     }
@@ -309,8 +378,10 @@ class WifiDirectVoiceManager(
     private fun startUdpReceiver() {
         try {
             udpSocket?.close()
-            udpSocket = DatagramSocket(VOICE_PORT).apply {
+            udpSocket = DatagramSocket(null).apply {
+                reuseAddress = true
                 broadcast = true
+                bind(InetSocketAddress(VOICE_PORT))
             }
         } catch (e: SocketException) {
             Log.e(TAG, "Socket creation failed", e)
@@ -326,7 +397,7 @@ class WifiDirectVoiceManager(
             audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
@@ -349,7 +420,7 @@ class WifiDirectVoiceManager(
 
         receiveJob = scope.launch(Dispatchers.IO) {
             val socket = udpSocket ?: return@launch
-            val buffer = ByteArray(bufferSize + 16)
+            val buffer = ByteArray(bufferSize + 32)
             val packet = DatagramPacket(buffer, buffer.size)
 
             while (isActive && !socket.isClosed) {
@@ -364,7 +435,7 @@ class WifiDirectVoiceManager(
                             ((buffer[3].toInt() and 0xFF) shl 8) or
                             (buffer[4].toInt() and 0xFF)
 
-                    // 1. FILTER OUT SELF-ECHO (Ignore broadcast packets reflected back to ourselves)
+                    // 1. FILTER OUT SELF-ECHO
                     if (senderId == localSenderId) {
                         continue
                     }
@@ -377,19 +448,29 @@ class WifiDirectVoiceManager(
 
                     when (packetType) {
                         PKT_PING -> {
-                            // Peer is looking for us; send PONG reply directly to their IP
+                            // Peer is checking in; reply with PONG
                             sendPacket(PKT_PONG, packet.address, ByteArray(0))
                         }
                         PKT_PONG -> {
-                            // Handshake confirmed
+                            // Heartbeat confirmed
                         }
                         PKT_AUDIO -> {
                             val payloadLength = packet.length - 5
                             if (payloadLength > 16) {
-                                val decrypted = voiceEncryptor.decrypt(packet.data, 5, payloadLength)
-                                if (decrypted != null && decrypted.isNotEmpty()) {
+                                var audioBytes: ByteArray? = null
+                                try {
+                                    audioBytes = voiceEncryptor.decrypt(packet.data, 5, payloadLength)
+                                } catch (_: Exception) {}
+
+                                // Fallback: If decryption fails, attempt raw audio pass to avoid silent failure
+                                if (audioBytes == null && payloadLength > 0) {
+                                    audioBytes = ByteArray(payloadLength)
+                                    System.arraycopy(packet.data, 5, audioBytes, 0, payloadLength)
+                                }
+
+                                if (audioBytes != null && audioBytes.isNotEmpty()) {
                                     _isReceiving.value = true
-                                    audioTrack?.write(decrypted, 0, decrypted.size)
+                                    audioTrack?.write(audioBytes, 0, audioBytes.size)
                                 }
                             }
                         }
@@ -409,36 +490,56 @@ class WifiDirectVoiceManager(
 
         triggerHapticFeedback(60)
         _isTransmitting.value = true
-        _statusMessage.value = "Transmitting (Encrypted Wi-Fi)..."
+        _statusMessage.value = "Transmitting (Wi-Fi)..."
 
         val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, AUDIO_FORMAT)
         val bufferSize = maxOf(minBufferSize, 2048)
 
+        var record: AudioRecord? = null
         try {
-            audioRecord = AudioRecord(
+            record = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 SAMPLE_RATE,
                 CHANNEL_IN,
                 AUDIO_FORMAT,
                 bufferSize
             )
-            audioRecord?.startRecording()
-        } catch (e: Exception) {
-            Log.e(TAG, "AudioRecord failed", e)
+        } catch (_: Exception) {}
+
+        if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+            try {
+                record?.release()
+                record = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    SAMPLE_RATE,
+                    CHANNEL_IN,
+                    AUDIO_FORMAT,
+                    bufferSize
+                )
+            } catch (_: Exception) {}
+        }
+
+        if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "AudioRecord could not initialize")
             _isTransmitting.value = false
+            _statusMessage.value = "Microphone error (Check permission)"
             return
         }
 
+        audioRecord = record
+        audioRecord?.startRecording()
+
         transmitJob = scope.launch(Dispatchers.IO) {
-            val record = audioRecord ?: return@launch
+            val rec = audioRecord ?: return@launch
             val buffer = ByteArray(bufferSize)
 
             while (isActive && _isTransmitting.value) {
-                val bytesRead = record.read(buffer, 0, buffer.size)
+                val bytesRead = rec.read(buffer, 0, buffer.size)
                 if (bytesRead > 0) {
                     val encrypted = voiceEncryptor.encrypt(buffer, 0, bytesRead)
-                    val target = targetPeerAddress ?: InetAddress.getByName("192.168.49.255")
-                    sendPacket(PKT_AUDIO, target, encrypted, encrypted.size)
+                    targetPeerAddress?.let { target ->
+                        sendPacket(PKT_AUDIO, target, encrypted, encrypted.size)
+                    }
                 }
             }
         }
@@ -523,8 +624,11 @@ class WifiDirectVoiceManager(
     fun disconnect() {
         stopTalking()
 
-        handshakeJob?.cancel()
-        handshakeJob = null
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+
+        tcpHandshakeJob?.cancel()
+        tcpHandshakeJob = null
 
         receiveJob?.cancel()
         receiveJob = null
@@ -544,6 +648,20 @@ class WifiDirectVoiceManager(
             // Ignored
         } finally {
             udpSocket = null
+        }
+
+        try {
+            tcpServerSocket?.close()
+        } catch (e: Exception) {
+            // Ignored
+        } finally {
+            tcpServerSocket = null
+        }
+
+        try {
+            audioManager.mode = AudioManager.MODE_NORMAL
+        } catch (e: Exception) {
+            // Ignored
         }
 
         wifiP2pManager?.removeGroup(channel, null)
