@@ -30,7 +30,9 @@ class WalkieTalkieService : Service() {
         const val NOTIFICATION_ID = 8821
         const val ACTION_START = "com.example.apkautomation.START_SERVICE"
         const val ACTION_STOP = "com.example.apkautomation.STOP_SERVICE"
-        const val EXTRA_STATUS = "extra_status"
+        const val ALERT_CHANNEL_ID = "walkie_talkie_alert_channel"
+        const val ALERT_NOTIFICATION_ID = 8822
+        const val EXTRA_AUTO_JOIN_ROOM = "extra_auto_join_room"
 
         fun start(context: Context, status: String = "Listening on Loudspeaker • Screen-Off Active") {
             val intent = Intent(context, WalkieTalkieService::class.java).apply {
@@ -54,6 +56,55 @@ class WalkieTalkieService : Service() {
                 context.stopService(intent)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to stop foreground service", e)
+            }
+        }
+
+        fun showWakeNotification(context: Context, callerName: String, roomCode: String) {
+            try {
+                val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val alertChannel = NotificationChannel(
+                        ALERT_CHANNEL_ID,
+                        "Incoming Walkie-Talkie Transmissions",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "Urgent incoming walkie-talkie calls and wake alerts"
+                        enableVibration(true)
+                        vibrationPattern = longArrayOf(0, 300, 200, 300, 200, 400)
+                    }
+                    notificationManager.createNotificationChannel(alertChannel)
+                }
+
+                val launchIntent = Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra(EXTRA_AUTO_JOIN_ROOM, roomCode)
+                }
+                val pendingIntent = PendingIntent.getActivity(
+                    context,
+                    roomCode.hashCode(),
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+                    .setContentTitle("🚨 INCOMING WALKIE-TALKIE CALL")
+                    .setContentText("$callerName is paging you on Room $roomCode! Tap to answer.")
+                    .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_CALL)
+                    .setAutoCancel(true)
+                    .setFullScreenIntent(pendingIntent, true)
+                    .setContentIntent(pendingIntent)
+                    .addAction(
+                        android.R.drawable.ic_menu_call,
+                        "ANSWER & TALK",
+                        pendingIntent
+                    )
+                    .build()
+
+                notificationManager.notify(ALERT_NOTIFICATION_ID, notification)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to show wake notification", e)
             }
         }
     }

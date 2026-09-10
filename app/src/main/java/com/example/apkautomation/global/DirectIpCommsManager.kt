@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.ToneGenerator
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
@@ -16,6 +17,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
 import com.example.apkautomation.crypto.VoiceEncryptor
+import com.example.apkautomation.service.WalkieTalkieService
 import com.example.apkautomation.signaling.MqttSignalingEngine
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,7 +62,75 @@ class DirectIpCommsManager(
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val prefs = context.getSharedPreferences("walkie_prefs", Context.MODE_PRIVATE)
-    private val localSenderId: Int = Random.nextInt(100000, 999999)
+
+    // Permanent 6-digit Phone ID per device
+    val myPhoneId: Int = run {
+        var id = prefs.getInt("my_phone_id", 0)
+        if (id == 0) {
+            id = Random.nextInt(100000, 999999)
+            prefs.edit().putInt("my_phone_id", id).apply()
+        }
+        id
+    }
+    private val localSenderId: Int = myPhoneId
+
+    // Customizable User Call Sign
+    private val _myCallSign = MutableStateFlow(
+        prefs.getString("my_call_sign", null) ?: "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}".trim()
+    )
+    val myCallSign = _myCallSign.asStateFlow()
+
+    fun updateCallSign(newSign: String) {
+        val trimmed = newSign.trim().ifBlank { "Phone $myPhoneId" }
+        _myCallSign.value = trimmed
+        prefs.edit().putString("my_call_sign", trimmed).apply()
+    }
+
+    // Saved Contacts
+    private val _savedContacts = MutableStateFlow<List<SavedContact>>(loadSavedContacts())
+    val savedContacts = _savedContacts.asStateFlow()
+
+    private val _incomingWakeAlert = MutableStateFlow<WakeAlert?>(null)
+    val incomingWakeAlert = _incomingWakeAlert.asStateFlow()
+
+    private var toneGenerator: ToneGenerator? = null
+
+    private fun loadSavedContacts(): List<SavedContact> {
+        val raw = prefs.getString("saved_contacts_list", "") ?: ""
+        if (raw.isBlank()) return emptyList()
+        val list = mutableListOf<SavedContact>()
+        raw.split(";").forEach { item ->
+            val parts = item.split(",")
+            if (parts.size >= 2) {
+                val id = parts[0].toIntOrNull()
+                val name = parts[1]
+                val callSign = if (parts.size >= 3) parts[2] else ""
+                if (id != null && name.isNotBlank()) {
+                    list.add(SavedContact(id = id, name = name, callSign = callSign))
+                }
+            }
+        }
+        return list
+    }
+
+    private fun persistContacts(list: List<SavedContact>) {
+        val str = list.joinToString(";") { "${it.id},${it.name},${it.callSign}" }
+        prefs.edit().putString("saved_contacts_list", str).apply()
+        _savedContacts.value = list
+    }
+
+    fun saveContact(id: Int, name: String, callSign: String = "") {
+        val current = _savedContacts.value.toMutableList()
+        current.removeAll { it.id == id }
+        current.add(0, SavedContact(id = id, name = name.trim().ifBlank { "Phone $id" }, callSign = callSign.trim()))
+        persistContacts(current)
+    }
+
+    fun removeContact(id: Int) {
+        val current = _savedContacts.value.toMutableList()
+        current.removeAll { it.id == id }
+        persistContacts(current)
+    }
 
     private val _connectionState = MutableStateFlow(DirectIpState.IDLE)
     val connectionState = _connectionState.asStateFlow()
@@ -134,6 +204,10 @@ class DirectIpCommsManager(
         refreshLocalIp()
         initAudioTrack()
 
+        try {
+            toneGenerator = ToneGenerator(AudioManager.STREAM_ALARM, 100)
+        } catch (_: Exception) {}
+
         signalingEngine.onMessageListener = { topic, payload ->
             handleSignalingMessage(topic, payload)
         }
@@ -203,6 +277,7 @@ class DirectIpCommsManager(
                     signalingEngine.connect(scope)
                 }
                 signalingEngine.subscribe("walkie_p2p/lobby/#")
+                signalingEngine.subscribe("walkie_p2p/alerts/$myPhoneId/#")
             } catch (e: Exception) {
                 Log.w(TAG, "Lobby connect initial warning: ${e.message}")
             }
@@ -212,10 +287,10 @@ class DirectIpCommsManager(
                     if (!signalingEngine.isConnected) {
                         signalingEngine.connect(scope)
                         signalingEngine.subscribe("walkie_p2p/lobby/#")
+                        signalingEngine.subscribe("walkie_p2p/alerts/$myPhoneId/#")
                     }
 
-                    val devName = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}".trim()
-                    val pingMsg = "LOBBY_PING|$localSenderId|$devName"
+                    val pingMsg = "LOBBY_PING|$myPhoneId|${_myCallSign.value}"
                     signalingEngine.publish("walkie_p2p/lobby/ping", pingMsg.toByteArray(StandardCharsets.UTF_8))
 
                     // Clean up stale peers older than 10 seconds
@@ -230,9 +305,33 @@ class DirectIpCommsManager(
     fun callPeer(peer: LobbyPeer) {
         val code = Random.nextInt(1000, 9999).toString()
         scope.launch(Dispatchers.IO) {
-            val devName = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}".trim()
-            val msg = "LOBBY_CALL|${peer.id}|$localSenderId|$code|$devName"
+            val msg = "LOBBY_CALL|${peer.id}|$myPhoneId|$code|${_myCallSign.value}"
             signalingEngine.publish("walkie_p2p/lobby/call", msg.toByteArray(StandardCharsets.UTF_8))
+            withContext(Dispatchers.Main) {
+                joinRoom(code)
+            }
+        }
+    }
+
+    fun sendWakeAlert(contact: SavedContact) {
+        val code = Random.nextInt(1000, 9999).toString()
+        _statusMessage.value = "🚨 Paging ${contact.name}... Joining Room $code"
+        scope.launch(Dispatchers.IO) {
+            val alertMsg = "PAGE_ALERT|$myPhoneId|${_myCallSign.value}|$code|${System.currentTimeMillis()}"
+            signalingEngine.publish("walkie_p2p/alerts/${contact.id}", alertMsg.toByteArray(StandardCharsets.UTF_8))
+            withContext(Dispatchers.Main) {
+                joinRoom(code)
+            }
+        }
+    }
+
+    fun callContact(contact: SavedContact) {
+        val code = Random.nextInt(1000, 9999).toString()
+        scope.launch(Dispatchers.IO) {
+            val msg = "LOBBY_CALL|${contact.id}|$myPhoneId|$code|${_myCallSign.value}"
+            signalingEngine.publish("walkie_p2p/lobby/call", msg.toByteArray(StandardCharsets.UTF_8))
+            val alertMsg = "PAGE_ALERT|$myPhoneId|${_myCallSign.value}|$code|${System.currentTimeMillis()}"
+            signalingEngine.publish("walkie_p2p/alerts/${contact.id}", alertMsg.toByteArray(StandardCharsets.UTF_8))
             withContext(Dispatchers.Main) {
                 joinRoom(code)
             }
@@ -354,6 +453,28 @@ class DirectIpCommsManager(
                     scope.launch(Dispatchers.Main) {
                         joinRoom(roomCode)
                     }
+                }
+            }
+            return
+        }
+
+        // Handle Personal Wake Alerts
+        if (topic.startsWith("walkie_p2p/alerts/$myPhoneId")) {
+            val text = String(payload, StandardCharsets.UTF_8)
+            val parts = text.split("|")
+            if (parts.size >= 4 && parts[0] == "PAGE_ALERT") {
+                val fromId = parts[1].toIntOrNull() ?: return
+                val callerName = parts[2].ifBlank { "Remote Walkie-Talkie" }
+                val roomCode = parts[3]
+                Log.i(TAG, "🚨 RECEIVED WAKE ALERT from $callerName ($fromId) for Room $roomCode")
+
+                playTacticalWakeTone()
+                triggerWakeVibration()
+                WalkieTalkieService.showWakeNotification(context, callerName, roomCode)
+                _incomingWakeAlert.value = WakeAlert(fromId, callerName, roomCode)
+
+                scope.launch(Dispatchers.Main) {
+                    joinRoom(roomCode)
                 }
             }
             return
@@ -883,6 +1004,35 @@ class DirectIpCommsManager(
 
         disconnectInternal()
         _statusMessage.value = "Link Disconnected"
+    }
+
+    private fun playTacticalWakeTone() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                applySpeakerphoneRouting(true)
+                toneGenerator?.startTone(ToneGenerator.TONE_CDMA_ALERT_NETWORK_LITE, 450)
+                delay(500)
+                toneGenerator?.startTone(ToneGenerator.TONE_CDMA_ALERT_NETWORK_LITE, 450)
+                delay(500)
+                toneGenerator?.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 700)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to play wake tone", e)
+            }
+        }
+    }
+
+    private fun triggerWakeVibration() {
+        try {
+            val pattern = longArrayOf(0, 300, 200, 300, 200, 500)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                vibrator?.vibrate(pattern, -1)
+            }
+        } catch (_: Exception) {}
     }
 
     private fun triggerHapticFeedback(millis: Long) {

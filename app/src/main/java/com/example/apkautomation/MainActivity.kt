@@ -128,6 +128,8 @@ class MainActivity : ComponentActivity() {
         radarEngine = WifiRadarEngine(this, lifecycleScope)
         mapperEngine = WifiMapperEngine(this, lifecycleScope)
 
+        handleAutoJoinIntent(intent)
+
         // Automatically start background WakeLock service when any call/room is active
         lifecycleScope.launch {
             combine(
@@ -254,6 +256,19 @@ class MainActivity : ComponentActivity() {
             return true
         }
         return false
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleAutoJoinIntent(intent)
+    }
+
+    private fun handleAutoJoinIntent(intent: android.content.Intent?) {
+        val autoJoinRoom = intent?.getStringExtra(WalkieTalkieService.EXTRA_AUTO_JOIN_ROOM)
+        if (!autoJoinRoom.isNullOrBlank()) {
+            directIpManager.joinRoom(autoJoinRoom)
+        }
     }
 
     override fun onDestroy() {
