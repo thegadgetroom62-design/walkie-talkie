@@ -1,4 +1,4 @@
-﻿package com.example.apkautomation.ui
+package com.example.apkautomation.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
@@ -75,6 +75,47 @@ fun BentoCard(
             modifier = Modifier.padding(contentPadding),
             content = content
         )
+    }
+}
+
+@Composable
+fun BentoCard(
+    title: String,
+    subtitle: String? = null,
+    modifier: Modifier = Modifier,
+    backgroundColor: Color = ProTheme.SurfaceCard,
+    borderColor: Color = ProTheme.BorderSubtle,
+    contentPadding: PaddingValues = PaddingValues(16.dp),
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = backgroundColor),
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Column(
+            modifier = Modifier.padding(contentPadding)
+        ) {
+            Text(
+                text = title,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                color = ProTheme.Emerald
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    fontSize = 12.sp,
+                    color = ProTheme.TextSecondary,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            } else {
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+            content()
+        }
     }
 }
 
