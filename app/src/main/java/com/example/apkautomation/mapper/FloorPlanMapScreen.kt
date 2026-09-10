@@ -1,4 +1,4 @@
-﻿package com.example.apkautomation.mapper
+package com.example.apkautomation.mapper
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -342,14 +342,25 @@ fun FloorPlanMapScreen(
                     }
                 } else {
                     Button(
+                        onClick = { mapperEngine.manualStep() },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF38BDF8)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("+ Step", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+
+                    Button(
                         onClick = { mapperEngine.stopMapping() },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.weight(1f),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Icon(Icons.Default.Pause, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Pause Mapping", fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Pause", fontWeight = FontWeight.Bold)
                     }
                 }
             }

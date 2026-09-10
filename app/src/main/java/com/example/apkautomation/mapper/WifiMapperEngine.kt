@@ -23,7 +23,7 @@ import kotlin.math.sqrt
 data class MapPoint(
     val x: Float, // Relative X in meters
     val y: Float, // Relative Y in meters
-    val rssi: Int, // Wi-Fi signal in dBm (e.g. -45 to -90)
+    val rssi: Int, // Wi-Fi signal in dBm
     val isWallBoundary: Boolean = false
 )
 
@@ -40,13 +40,14 @@ class WifiMapperEngine(
     companion object {
         private const val TAG = "WifiMapperEngine"
         private const val DEFAULT_STEP_LENGTH_METERS = 0.72f
-        private const val WALL_RSSI_DROP_THRESHOLD = 6 // dBm drop indicating wall attenuation
+        private const val WALL_RSSI_DROP_THRESHOLD = 5 // dBm drop indicating wall attenuation
     }
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
     private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
     private val rotationSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        ?: sensorManager?.getDefaultSensor(Sensor.TYPE_ORIENTATION)
     private val stepSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
     private val accelSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
@@ -78,8 +79,8 @@ class WifiMapperEngine(
     private var currentY = 0f
     private var lastRssi = -60
 
-    // Accelerometer fallback for step detection (if device lacks hardware STEP_DETECTOR)
-    private var lastAccelMagnitude = 0f
+    // Accelerometer step detector filter
+    private var lastAccelMagnitude = 9.8f
     private var lastStepTime = 0L
 
     private var pollJob: Job? = null
@@ -89,21 +90,21 @@ class WifiMapperEngine(
         _isMapping.value = true
 
         rotationSensor?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
 
+        // Register both step sensor AND accelerometer so all phones (Samsung, Huawei, Pixel) work reliably
         if (stepSensor != null) {
-            sensorManager?.registerListener(this, stepSensor, SensorManager.SENSOR_DELAY_UI)
-        } else {
-            accelSensor?.let {
-                sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
-            }
+            sensorManager?.registerListener(this, stepSensor, SensorManager.SENSOR_DELAY_GAME)
+        }
+        accelSensor?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
 
         pollJob = scope.launch(Dispatchers.IO) {
             while (isActive && _isMapping.value) {
                 updateWifiRssi()
-                delay(600)
+                delay(500)
             }
         }
 
@@ -132,10 +133,17 @@ class WifiMapperEngine(
         _points.value = emptyList()
         _walls.value = emptyList()
 
-        if (_isMapping.value) {
-            val rssi = getWifiRssi()
-            _points.value = listOf(MapPoint(0f, 0f, rssi))
-        }
+        val rssi = getWifiRssi()
+        _currentRssi.value = rssi
+        lastRssi = rssi
+        _points.value = listOf(MapPoint(0f, 0f, rssi))
+    }
+
+    /**
+     * Allows user to manually log a step/point if their phone's step sensor is asleep
+     */
+    fun manualStep() {
+        recordStep()
     }
 
     private fun updateWifiRssi() {
@@ -164,10 +172,13 @@ class WifiMapperEngine(
                 val orientation = FloatArray(3)
                 SensorManager.getOrientation(rotationMatrix, orientation)
 
-                // Azimuth in degrees (-180 to +180) -> Convert to 0..360
                 var degrees = Math.toDegrees(orientation[0].toDouble()).toFloat()
                 if (degrees < 0) degrees += 360f
                 _currentHeadingDegrees.value = degrees
+            }
+
+            Sensor.TYPE_ORIENTATION -> {
+                _currentHeadingDegrees.value = event.values[0]
             }
 
             Sensor.TYPE_STEP_DETECTOR -> {
@@ -175,27 +186,25 @@ class WifiMapperEngine(
             }
 
             Sensor.TYPE_ACCELEROMETER -> {
-                // Peak detection step fallback for devices without hardware step sensor
-                if (stepSensor == null) {
-                    val x = event.values[0]
-                    val y = event.values[1]
-                    val z = event.values[2]
-                    val magnitude = sqrt(x * x + y * y + z * z)
-                    val now = SystemClock.elapsedRealtime()
+                val x = event.values[0]
+                val y = event.values[1]
+                val z = event.values[2]
+                val magnitude = sqrt(x * x + y * y + z * z)
+                val now = SystemClock.elapsedRealtime()
 
-                    if (magnitude - lastAccelMagnitude > 2.8f && (now - lastStepTime > 380)) {
-                        lastStepTime = now
-                        recordStep()
-                    }
-                    lastAccelMagnitude = magnitude
+                // Universal step peak detection (tuned to 1.7f delta above baseline)
+                val delta = kotlin.math.abs(magnitude - lastAccelMagnitude)
+                if (delta > 1.7f && (now - lastStepTime > 320)) {
+                    lastStepTime = now
+                    recordStep()
                 }
+                lastAccelMagnitude = magnitude
             }
         }
     }
 
     private fun recordStep() {
         val headingRad = Math.toRadians(_currentHeadingDegrees.value.toDouble())
-        // Compass heading: 0 deg = North (+Y), 90 deg = East (+X)
         val dx = (sin(headingRad) * DEFAULT_STEP_LENGTH_METERS).toFloat()
         val dy = (cos(headingRad) * DEFAULT_STEP_LENGTH_METERS).toFloat()
 
