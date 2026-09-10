@@ -18,9 +18,10 @@ import java.util.Random
  * serverless room handshakes and encrypted audio relay fallback.
  */
 class MqttSignalingEngine(
-    private val host: String = "broker.hivemq.com",
+    private val candidateHosts: List<String> = listOf("broker.emqx.io", "test.mosquitto.org", "broker.hivemq.com"),
     private val port: Int = 1883
 ) {
+    private var activeHost: String = candidateHosts.first()
     companion object {
         private const val TAG = "MqttSignaling"
         private const val PKT_CONNECT: Byte = 0x10
@@ -50,49 +51,59 @@ class MqttSignalingEngine(
 
     suspend fun connect(scope: CoroutineScope): Boolean = withContext(Dispatchers.IO) {
         disconnect()
-        try {
-            Log.i(TAG, "Connecting to signaling broker $host:$port...")
-            val s = Socket()
-            s.connect(InetSocketAddress(host, port), 6000)
-            s.tcpNoDelay = true
-            s.soTimeout = 0
+        var lastError: String? = null
+        for (host in candidateHosts) {
+            try {
+                Log.i(TAG, "Attempting signaling connection to $host:$port...")
+                val s = Socket()
+                s.connect(InetSocketAddress(host, port), 4000)
+                s.tcpNoDelay = true
+                s.soTimeout = 0
 
-            socket = s
-            outputStream = BufferedOutputStream(s.getOutputStream())
-            inputStream = BufferedInputStream(s.getInputStream())
+                socket = s
+                outputStream = BufferedOutputStream(s.getOutputStream())
+                inputStream = BufferedInputStream(s.getInputStream())
 
-            sendConnectPacket()
+                sendConnectPacket()
 
-            // Read CONNACK
-            val input = inputStream ?: throw EOFException("Input stream null")
-            val header = input.read()
-            if (header == -1) throw EOFException("Broker closed connection")
-            val len = readRemainingLength(input)
-            val connackPayload = ByteArray(len)
-            var read = 0
-            while (read < len) {
-                val r = input.read(connackPayload, read, len - read)
-                if (r == -1) break
-                read += r
+                // Read CONNACK
+                val input = inputStream ?: throw EOFException("Input stream null")
+                val header = input.read()
+                if (header == -1) throw EOFException("Broker closed connection")
+                val len = readRemainingLength(input)
+                val connackPayload = ByteArray(len)
+                var read = 0
+                while (read < len) {
+                    val r = input.read(connackPayload, read, len - read)
+                    if (r == -1) break
+                    read += r
+                }
+
+                if ((header ushr 4) != PKT_CONNACK || (connackPayload.size >= 2 && connackPayload[1].toInt() != 0)) {
+                    throw Exception("CONNACK rejected by $host")
+                }
+
+                activeHost = host
+                isConnected = true
+                Log.i(TAG, "Connected to signaling broker $host successfully as $clientId")
+                onConnectionStateListener?.invoke(true, null)
+
+                startListener(scope)
+                startPingLoop(scope)
+                return@withContext true
+            } catch (e: Exception) {
+                Log.w(TAG, "Broker $host failed: ${e.message}")
+                lastError = e.message
+                try { socket?.close() } catch (_: Exception) {}
+                socket = null
+                outputStream = null
+                inputStream = null
             }
-
-            if ((header ushr 4) != PKT_CONNACK || (connackPayload.size >= 2 && connackPayload[1].toInt() != 0)) {
-                throw Exception("CONNACK rejected by broker")
-            }
-
-            isConnected = true
-            Log.i(TAG, "Connected to signaling broker successfully as $clientId")
-            onConnectionStateListener?.invoke(true, null)
-
-            startListener(scope)
-            startPingLoop(scope)
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "Signaling connection failed: ${e.message}")
-            disconnect()
-            onConnectionStateListener?.invoke(false, e.message)
-            false
         }
+        Log.e(TAG, "All signaling brokers failed. Last error: $lastError")
+        disconnect()
+        onConnectionStateListener?.invoke(false, lastError)
+        false
     }
 
     private fun startListener(scope: CoroutineScope) {
