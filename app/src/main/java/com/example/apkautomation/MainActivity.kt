@@ -351,7 +351,9 @@ fun WalkieTalkieApp(
 
     val isBtConnected = (btManager.connectionState.collectAsState().value == ConnectionState.CONNECTED)
     val isWifiConnected = (wifiManager.connectionState.collectAsState().value == ConnectionState.CONNECTED)
-    val isDirectIpConnected = (directIpManager.connectionState.collectAsState().value == DirectIpState.CONNECTED)
+    val directIpConnState by directIpManager.connectionState.collectAsState()
+    val directIpRoomCode by directIpManager.activeRoomCode.collectAsState()
+    val isDirectIpConnected = (directIpConnState == DirectIpState.CONNECTED || directIpRoomCode != null)
     val isAnyConnected = isBtConnected || isWifiConnected || isDirectIpConnected
 
     val context = LocalContext.current
@@ -553,15 +555,15 @@ fun WalkieTalkieApp(
                                 }
                             )
                         } else if (isDirectIpConnected) {
-                            val peerIp by directIpManager.peerIp.collectAsState()
+                            val callLabel by directIpManager.activeCallLabel.collectAsState()
                             val isTx by directIpManager.isTransmitting.collectAsState()
                             val isRx by directIpManager.isReceiving.collectAsState()
                             val isSpk by directIpManager.isSpeakerphone.collectAsState()
                             val status by directIpManager.statusMessage.collectAsState()
 
                             ActiveCallScreen(
-                                modeLabel = "Global Direct-IP (Serverless P2P)",
-                                deviceName = peerIp ?: "Remote Node",
+                                modeLabel = "Global Walkie-Talkie",
+                                deviceName = callLabel,
                                 isTransmitting = isTx,
                                 isReceiving = isRx,
                                 isSpeakerphone = isSpk,

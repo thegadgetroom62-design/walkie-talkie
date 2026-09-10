@@ -18,7 +18,7 @@ import java.util.Random
  * serverless room handshakes and encrypted audio relay fallback.
  */
 class MqttSignalingEngine(
-    private val candidateHosts: List<String> = listOf("broker.emqx.io", "test.mosquitto.org", "broker.hivemq.com"),
+    private val candidateHosts: List<String> = listOf("broker.hivemq.com", "broker.emqx.io", "test.mosquitto.org"),
     private val port: Int = 1883
 ) {
     private var activeHost: String = candidateHosts.first()

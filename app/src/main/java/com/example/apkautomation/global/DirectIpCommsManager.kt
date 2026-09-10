@@ -147,6 +147,9 @@ class DirectIpCommsManager(
     private val _onlinePeers = MutableStateFlow<List<LobbyPeer>>(emptyList())
     val onlinePeers = _onlinePeers.asStateFlow()
 
+    private val _activeCallLabel = MutableStateFlow("Tactical Channel")
+    val activeCallLabel = _activeCallLabel.asStateFlow()
+
     private val _localIp = MutableStateFlow(detectLocalIp())
     val localIp = _localIp.asStateFlow()
 
@@ -304,6 +307,7 @@ class DirectIpCommsManager(
 
     fun callPeer(peer: LobbyPeer) {
         val code = Random.nextInt(1000, 9999).toString()
+        _activeCallLabel.value = "Call with ${peer.name}"
         scope.launch(Dispatchers.IO) {
             val msg = "LOBBY_CALL|${peer.id}|$myPhoneId|$code|${_myCallSign.value}"
             signalingEngine.publish("walkie_p2p/lobby/call", msg.toByteArray(StandardCharsets.UTF_8))
@@ -315,6 +319,7 @@ class DirectIpCommsManager(
 
     fun sendWakeAlert(contact: SavedContact) {
         val code = Random.nextInt(1000, 9999).toString()
+        _activeCallLabel.value = "Call with ${contact.name}"
         _statusMessage.value = "🚨 Paging ${contact.name}... Joining Room $code"
         scope.launch(Dispatchers.IO) {
             val alertMsg = "PAGE_ALERT|$myPhoneId|${_myCallSign.value}|$code|${System.currentTimeMillis()}"
@@ -327,6 +332,7 @@ class DirectIpCommsManager(
 
     fun callContact(contact: SavedContact) {
         val code = Random.nextInt(1000, 9999).toString()
+        _activeCallLabel.value = "Call with ${contact.name}"
         scope.launch(Dispatchers.IO) {
             val msg = "LOBBY_CALL|${contact.id}|$myPhoneId|$code|${_myCallSign.value}"
             signalingEngine.publish("walkie_p2p/lobby/call", msg.toByteArray(StandardCharsets.UTF_8))
@@ -340,6 +346,7 @@ class DirectIpCommsManager(
 
     fun joinChannel(channelNumber: Int) {
         val channelCode = (1000 + channelNumber).toString()
+        _activeCallLabel.value = "Channel $channelNumber"
         joinRoom(channelCode)
     }
 
@@ -395,8 +402,11 @@ class DirectIpCommsManager(
 
         disconnectInternal()
         _activeRoomCode.value = code
-        _roomMode.value = RoomMode.CONNECTING
-        _statusMessage.value = "Joining Room $code..."
+        _roomMode.value = RoomMode.ENCRYPTED_RELAY
+        _connectionState.value = DirectIpState.CONNECTED
+        _statusMessage.value = "Channel Active • Ready to Talk"
+        acquireWakeLocks()
+        applySpeakerphoneRouting(true)
 
         scope.launch(Dispatchers.IO) {
             initUdpSocket(0)
@@ -404,27 +414,24 @@ class DirectIpCommsManager(
             val myPubIp = if (stunRes.isSuccessful) stunRes.publicIp else _localIp.value
             val myPubPort = if (stunRes.isSuccessful) stunRes.publicPort else DEFAULT_PORT
 
-            val connected = signalingEngine.connect(scope)
+            val connected = if (signalingEngine.isConnected) true else signalingEngine.connect(scope)
             if (connected) {
                 signalingEngine.subscribe("walkie_p2p/$code/#")
-                _statusMessage.value = "Joined Room $code • Punching Firewalls..."
+                signalingEngine.subscribe("walkie_p2p/alerts/$myPhoneId/#")
+                _statusMessage.value = "Channel Active • Ready to Talk"
 
                 // Continuous announcement until connected so both users connect seamlessly
                 joinAnnounceJob?.cancel()
                 joinAnnounceJob = scope.launch(Dispatchers.IO) {
                     val msg = "JOIN_REQ|$localSenderId|$myPubIp|$myPubPort|${_localIp.value}"
-                    for (attempt in 1..25) {
-                        if (!isActive || _connectionState.value == DirectIpState.CONNECTED) break
+                    for (attempt in 1..10) {
+                        if (!isActive) break
                         signalingEngine.publish("walkie_p2p/$code/signal", msg.toByteArray(StandardCharsets.UTF_8))
-                        delay(2500)
+                        delay(2000)
                     }
                 }
-
-                // Schedule relay fallback if UDP is blocked by strict carrier CGNAT
-                scheduleFallbackTimer(code)
             } else {
-                _roomMode.value = RoomMode.DISCONNECTED
-                _statusMessage.value = "Failed to join room. Check internet."
+                _statusMessage.value = "Reconnecting to server..."
             }
         }
     }
@@ -450,6 +457,7 @@ class DirectIpCommsManager(
                     val callerName = if (parts.size > 4) parts[4] else "Direct Call"
                     Log.i(TAG, "Incoming direct call from $callerName, joining room $roomCode")
                     triggerHapticFeedback(80)
+                    _activeCallLabel.value = "Call with $callerName"
                     scope.launch(Dispatchers.Main) {
                         joinRoom(roomCode)
                     }
@@ -472,6 +480,7 @@ class DirectIpCommsManager(
                 triggerWakeVibration()
                 WalkieTalkieService.showWakeNotification(context, callerName, roomCode)
                 _incomingWakeAlert.value = WakeAlert(fromId, callerName, roomCode)
+                _activeCallLabel.value = "Call with $callerName"
 
                 scope.launch(Dispatchers.Main) {
                     joinRoom(roomCode)
