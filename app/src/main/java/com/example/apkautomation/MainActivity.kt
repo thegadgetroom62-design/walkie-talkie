@@ -83,9 +83,9 @@ import com.example.apkautomation.video.WifiVideoManager
 import com.example.apkautomation.wifi.WifiDirectVoiceManager
 
 enum class CommsTransport(val label: String) {
+    DIRECT_IP("Global Call"),
     BLUETOOTH("Bluetooth"),
-    WIFI_DIRECT("Wi-Fi Mesh"),
-    DIRECT_IP("Direct-IP Global")
+    WIFI_DIRECT("Wi-Fi Mesh")
 }
 
 class MainActivity : ComponentActivity() {
@@ -320,7 +320,7 @@ fun WalkieTalkieApp(
 ) {
     var hasPermissions by remember { mutableStateOf(checkPermissions()) }
     var activeNavTab by remember { mutableStateOf(NavDestination.COMMS) }
-    var commsTransport by remember { mutableStateOf(CommsTransport.BLUETOOTH) }
+    var commsTransport by remember { mutableStateOf(CommsTransport.DIRECT_IP) }
     val isVideoCallActive by wifiManager.isVideoCallActive.collectAsState()
     var isMicMuted by remember { mutableStateOf(false) }
 
@@ -583,7 +583,7 @@ fun WalkieTalkieApp(
                             ) {
                                 // Sleek segmented pill switcher
                                 SegmentedPillSwitcher(
-                                    options = listOf(CommsTransport.BLUETOOTH, CommsTransport.WIFI_DIRECT, CommsTransport.DIRECT_IP),
+                                    options = listOf(CommsTransport.DIRECT_IP, CommsTransport.BLUETOOTH, CommsTransport.WIFI_DIRECT),
                                     selectedOption = commsTransport,
                                     onOptionSelected = { transport ->
                                         when (transport) {
