@@ -1,15 +1,14 @@
-﻿package com.example.apkautomation.global
+package com.example.apkautomation.global
 
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,6 +34,8 @@ fun DirectIpSetupScreen(
     val context = LocalContext.current
     val connectionState by directIpManager.connectionState.collectAsState()
     val localIp by directIpManager.localIp.collectAsState()
+    val publicAddress by directIpManager.publicAddress.collectAsState()
+    val natStatus by directIpManager.natStatus.collectAsState()
     val statusMessage by directIpManager.statusMessage.collectAsState()
     val latencyMs by directIpManager.latencyMs.collectAsState()
     val recentPeers by directIpManager.recentPeers.collectAsState()
@@ -47,12 +48,103 @@ fun DirectIpSetupScreen(
             .padding(vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. My IP Card with Copy
-        BentoCard(title = "MY LOCAL IP ADDRESS", subtitle = "Share this IP with your peer to receive calls") {
+        // 1. Global Public Address Card (STUN Resolved)
+        BentoCard(
+            title = "GLOBAL PUBLIC ADDRESS (STUN / ZERO-APP)",
+            subtitle = "Share this address for calls over 100+ km (Traverses 4G/5G & Wi-Fi NAT)"
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = publicAddress ?: "Resolving STUN...",
+                            color = ProTheme.SkyBlue,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            text = natStatus,
+                            color = ProTheme.Emerald,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        IconButton(
+                            onClick = { directIpManager.resolvePublicAddress() },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(ProTheme.SurfaceCardElevated)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Refresh STUN",
+                                tint = ProTheme.TextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                val addressToShare = publicAddress ?: localIp
+                                val sendIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra(Intent.EXTRA_TEXT, "Call me on Walkie-Talkie Pro! My Global Calling Address is: $addressToShare")
+                                    type = "text/plain"
+                                }
+                                val shareIntent = Intent.createChooser(sendIntent, "Share Global Calling Code")
+                                context.startActivity(shareIntent)
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ProTheme.SkyBlue,
+                                contentColor = Color.Black
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Share", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                val addressToCopy = publicAddress ?: localIp
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("Global Address", addressToCopy))
+                                Toast.makeText(context, "Global Address Copied", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ProTheme.SurfaceCardElevated,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Copy", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Local Wi-Fi IP Card
+        BentoCard(title = "LOCAL WI-FI ADDRESS", subtitle = "Use when both phones are on the same local router") {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 4.dp),
+                    .padding(vertical = 2.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -60,63 +152,51 @@ fun DirectIpSetupScreen(
                     Text(
                         text = localIp,
                         color = ProTheme.Emerald,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Black,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
-                        text = "Port: ${DirectIpCommsManager.DEFAULT_PORT} • UDP Direct",
-                        color = ProTheme.TextSecondary,
+                        text = "Port: ${DirectIpCommsManager.DEFAULT_PORT} • LAN Only",
+                        color = ProTheme.TextMuted,
                         fontSize = 11.sp
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconButton(
-                        onClick = { directIpManager.refreshLocalIp() },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(ProTheme.SurfaceCardElevated)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh IP",
-                            tint = ProTheme.TextSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
+                TextButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Local IP", localIp))
+                        Toast.makeText(context, "Local IP Copied", Toast.LENGTH_SHORT).show()
                     }
-
-                    Button(
-                        onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("My IP", localIp))
-                            Toast.makeText(context, "IP Copied to Clipboard", Toast.LENGTH_SHORT).show()
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ProTheme.EmeraldDark,
-                            contentColor = ProTheme.Emerald
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Copy", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
+                ) {
+                    Text("Copy LAN IP", fontSize = 12.sp, color = ProTheme.Emerald)
                 }
             }
         }
 
-        // 2. Direct Dial / Connect Card
-        BentoCard(title = "DIAL PEER BY IP", subtitle = "Enter your peer's IP address (Satellite, Wi-Fi or Cellular)") {
+        // 3. Direct Dial / Connect Card
+        BentoCard(title = "DIAL PEER GLOBALLY", subtitle = "Paste your peer's Global Address (e.g. 174.56.23.90:8895)") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = targetIpInput,
                     onValueChange = { targetIpInput = it },
-                    label = { Text("Peer IP Address") },
-                    placeholder = { Text("e.g. 192.168.1.45") },
+                    label = { Text("Peer Global Address") },
+                    placeholder = { Text("e.g. 174.56.23.90:8895") },
                     singleLine = true,
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
+                                if (!clip.isNullOrBlank()) {
+                                    targetIpInput = clip.trim()
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.ContentPaste, contentDescription = "Paste", tint = ProTheme.SkyBlue)
+                        }
+                    },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = ProTheme.Emerald,
                         unfocusedBorderColor = ProTheme.BorderGlow,
@@ -164,7 +244,7 @@ fun DirectIpSetupScreen(
             }
         }
 
-        // 3. Status & Telemetry Card
+        // 4. Status & Telemetry Card
         BentoCard(title = "GLOBAL P2P STATUS", subtitle = "Zero centralized servers • AES-256 CTR Encrypted") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -183,7 +263,7 @@ fun DirectIpSetupScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Direct UDP Tunnel • No Carrier Interception",
+                        text = "UDP Hole-Punching Tunnel • Zero Cloud Relay",
                         color = ProTheme.TextMuted,
                         fontSize = 11.sp
                     )
@@ -208,7 +288,7 @@ fun DirectIpSetupScreen(
             }
         }
 
-        // 4. Recent Peers
+        // 5. Recent Peers
         if (recentPeers.isNotEmpty()) {
             BentoCard(title = "RECENT CONNECTIONS", subtitle = "Tap to quickly redial") {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

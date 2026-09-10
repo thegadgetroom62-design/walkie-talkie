@@ -1,4 +1,4 @@
-﻿package com.example.apkautomation.global
+package com.example.apkautomation.global
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -22,9 +22,10 @@ import java.util.Collections
 import kotlin.random.Random
 
 /**
- * Direct-IP Global P2P Engine
+ * Direct-IP Global P2P Engine with Built-in STUN NAT Traversal
  * Enables serverless, direct peer-to-peer calling over any IP network
  * (Satellite cellular, Wi-Fi, mobile hotspot, or home internet) with AES-256 CTR encryption.
+ * Automatically resolves public IP/port via RFC 5389 STUN and performs UDP hole punching.
  */
 class DirectIpCommsManager(
     private val context: Context,
@@ -42,6 +43,7 @@ class DirectIpCommsManager(
         private const val PKT_PONG: Byte = 2
         private const val PKT_AUDIO: Byte = 3
         private const val PKT_DISCONNECT: Byte = 4
+        private const val PKT_KEEPALIVE: Byte = 5
     }
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -52,6 +54,12 @@ class DirectIpCommsManager(
 
     private val _localIp = MutableStateFlow(detectLocalIp())
     val localIp = _localIp.asStateFlow()
+
+    private val _publicAddress = MutableStateFlow<String?>("Resolving STUN...")
+    val publicAddress = _publicAddress.asStateFlow()
+
+    private val _natStatus = MutableStateFlow("Querying STUN...")
+    val natStatus = _natStatus.asStateFlow()
 
     private val _peerIp = MutableStateFlow<String?>(null)
     val peerIp = _peerIp.asStateFlow()
@@ -84,6 +92,7 @@ class DirectIpCommsManager(
     private var receiveJob: Job? = null
     private var transmitJob: Job? = null
     private var heartbeatJob: Job? = null
+    private var stunJob: Job? = null
 
     private var voiceEncryptor: VoiceEncryptor = VoiceEncryptor("1234")
     private var lastPingSentTime = 0L
@@ -99,6 +108,24 @@ class DirectIpCommsManager(
 
     fun refreshLocalIp() {
         _localIp.value = detectLocalIp()
+        resolvePublicAddress()
+    }
+
+    fun resolvePublicAddress() {
+        stunJob?.cancel()
+        stunJob = scope.launch(Dispatchers.IO) {
+            _natStatus.value = "Contacting Google STUN..."
+            val result = StunClient.resolvePublicAddress(udpSocket)
+            if (result.isSuccessful) {
+                _publicAddress.value = result.addressString
+                _natStatus.value = "NAT Traversal Ready (${result.serverUsed})"
+                Log.i(TAG, "STUN mapped: ${result.addressString}")
+            } else {
+                val fallback = "${_localIp.value}:$DEFAULT_PORT"
+                _publicAddress.value = fallback
+                _natStatus.value = "Local Wi-Fi Only"
+            }
+        }
     }
 
     private fun detectLocalIp(): String {
@@ -121,48 +148,58 @@ class DirectIpCommsManager(
         disconnect()
         refreshLocalIp()
         _connectionState.value = DirectIpState.LISTENING
-        _statusMessage.value = "Listening on port $DEFAULT_PORT (Share your IP)"
+        _statusMessage.value = "Listening on port $DEFAULT_PORT (Share your Global Address)"
 
         initUdpSocket(DEFAULT_PORT)
         startHeartbeat()
+        resolvePublicAddress()
     }
 
-    fun connectToPeer(ipString: String, port: Int = DEFAULT_PORT) {
-        val cleanIp = ipString.trim()
-        if (cleanIp.isBlank()) {
-            _statusMessage.value = "Please enter a valid target IP"
+    fun connectToPeer(addressInput: String, defaultPortFallback: Int = DEFAULT_PORT) {
+        val trimmed = addressInput.trim().removePrefix("CALL-").removePrefix("call-")
+        if (trimmed.isBlank()) {
+            _statusMessage.value = "Please enter a target address"
             return
         }
+
+        // Support IP:Port format (e.g. 174.56.23.90:8895) or plain IP
+        val parts = trimmed.split(":")
+        val targetIp = parts[0].trim()
+        val port = if (parts.size > 1) parts[1].trim().toIntOrNull() ?: defaultPortFallback else defaultPortFallback
 
         disconnect()
         refreshLocalIp()
         _connectionState.value = DirectIpState.CONNECTING
-        _statusMessage.value = "Pinging peer $cleanIp..."
-        _peerIp.value = cleanIp
+        _statusMessage.value = "Punching NAT Hole to $targetIp:$port..."
+        _peerIp.value = "$targetIp:$port"
 
-        saveRecentPeer(cleanIp)
+        saveRecentPeer("$targetIp:$port")
 
         scope.launch(Dispatchers.IO) {
             try {
-                targetInetAddress = InetAddress.getByName(cleanIp)
+                targetInetAddress = InetAddress.getByName(targetIp)
                 targetPort = port
-                initUdpSocket(0) // Bind to any available local port
+                initUdpSocket(0) // Bind to any local ephemeral port
                 startHeartbeat()
 
-                // Send immediate ping
-                sendPacket(PKT_PING, targetInetAddress!!, targetPort, ByteArray(0))
+                // Aggressive UDP Hole Punching: Send 8 rapid ping bursts
+                for (i in 1..8) {
+                    if (!isActive || _connectionState.value == DirectIpState.CONNECTED) break
+                    sendPacket(PKT_PING, targetInetAddress!!, targetPort, ByteArray(0))
+                    delay(150)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Connect error", e)
                 _connectionState.value = DirectIpState.IDLE
-                _statusMessage.value = "Invalid IP address: ${e.message}"
+                _statusMessage.value = "Invalid Address: ${e.message}"
             }
         }
     }
 
-    private fun saveRecentPeer(ip: String) {
+    private fun saveRecentPeer(address: String) {
         val current = _recentPeers.value.toMutableList()
-        current.remove(ip)
-        current.add(0, ip)
+        current.remove(address)
+        current.add(0, address)
         _recentPeers.value = current.take(5)
     }
 
@@ -231,11 +268,11 @@ class DirectIpCommsManager(
 
                     if (senderId == localSenderId) continue
 
-                    // Automatically lock target address on first incoming packet if listening
+                    // Lock target address on incoming packet
                     if (targetInetAddress == null) {
                         targetInetAddress = packet.address
                         targetPort = packet.port
-                        _peerIp.value = packet.address.hostAddress
+                        _peerIp.value = "${packet.address.hostAddress}:${packet.port}"
                         _connectionState.value = DirectIpState.CONNECTED
                         _statusMessage.value = "Direct-IP Channel Locked (${packet.address.hostAddress})"
                     }
@@ -245,13 +282,13 @@ class DirectIpCommsManager(
                             sendPacket(PKT_PONG, packet.address, packet.port, ByteArray(0))
                             if (_connectionState.value != DirectIpState.CONNECTED) {
                                 _connectionState.value = DirectIpState.CONNECTED
-                                _statusMessage.value = "Connected to ${packet.address.hostAddress}"
+                                _statusMessage.value = "Connected to ${packet.address.hostAddress}:${packet.port}"
                             }
                         }
                         PKT_PONG -> {
                             if (_connectionState.value != DirectIpState.CONNECTED) {
                                 _connectionState.value = DirectIpState.CONNECTED
-                                _statusMessage.value = "Connected to ${packet.address.hostAddress}"
+                                _statusMessage.value = "Connected to ${packet.address.hostAddress}:${packet.port}"
                             }
                             if (lastPingSentTime > 0) {
                                 val roundTrip = (System.currentTimeMillis() - lastPingSentTime).toInt()
@@ -272,6 +309,9 @@ class DirectIpCommsManager(
                                 }
                             }
                         }
+                        PKT_KEEPALIVE -> {
+                            // NAT pinhole keepalive packet received
+                        }
                         PKT_DISCONNECT -> {
                             disconnect()
                         }
@@ -287,12 +327,19 @@ class DirectIpCommsManager(
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch(Dispatchers.IO) {
+            var keepaliveCounter = 0
             while (isActive) {
                 delay(2000)
                 val peer = targetInetAddress
                 if (peer != null) {
                     lastPingSentTime = System.currentTimeMillis()
                     sendPacket(PKT_PING, peer, targetPort, ByteArray(0))
+                }
+
+                // Send NAT keepalive every 12 seconds to prevent carrier firewall timeouts
+                keepaliveCounter++
+                if (keepaliveCounter % 6 == 0 && peer != null) {
+                    sendPacket(PKT_KEEPALIVE, peer, targetPort, ByteArray(0))
                 }
             }
         }
