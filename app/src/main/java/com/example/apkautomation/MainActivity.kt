@@ -21,8 +21,10 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
@@ -435,61 +437,72 @@ fun WalkieTalkieApp(
                                 onDisconnect = { directIpManager.disconnect() }
                             )
                         } else {
-                            // Sleek segmented pill switcher
-                            SegmentedPillSwitcher(
-                                options = listOf(CommsTransport.BLUETOOTH, CommsTransport.WIFI_DIRECT, CommsTransport.DIRECT_IP),
-                                selectedOption = commsTransport,
-                                onOptionSelected = { transport ->
-                                    when (transport) {
-                                        CommsTransport.BLUETOOTH -> {
-                                            wifiManager.disconnect()
-                                            directIpManager.disconnect()
+                            // Scrollable Setup Screen so nothing is EVER cut off or hidden behind the bottom dock
+                            Column(
+                                modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                // Sleek segmented pill switcher
+                                SegmentedPillSwitcher(
+                                    options = listOf(CommsTransport.BLUETOOTH, CommsTransport.WIFI_DIRECT, CommsTransport.DIRECT_IP),
+                                    selectedOption = commsTransport,
+                                    onOptionSelected = { transport ->
+                                        when (transport) {
+                                            CommsTransport.BLUETOOTH -> {
+                                                wifiManager.disconnect()
+                                                directIpManager.disconnect()
+                                            }
+                                            CommsTransport.WIFI_DIRECT -> {
+                                                btManager.disconnect()
+                                                directIpManager.disconnect()
+                                                wifiManager.startPeerDiscovery()
+                                            }
+                                            CommsTransport.DIRECT_IP -> {
+                                                btManager.disconnect()
+                                                wifiManager.disconnect()
+                                                directIpManager.refreshLocalIp()
+                                            }
                                         }
-                                        CommsTransport.WIFI_DIRECT -> {
-                                            btManager.disconnect()
-                                            directIpManager.disconnect()
-                                            wifiManager.startPeerDiscovery()
-                                        }
-                                        CommsTransport.DIRECT_IP -> {
-                                            btManager.disconnect()
-                                            wifiManager.disconnect()
-                                            directIpManager.refreshLocalIp()
+                                        commsTransport = transport
+                                    },
+                                    labelProvider = { it.label },
+                                    iconProvider = {
+                                        when (it) {
+                                            CommsTransport.BLUETOOTH -> Icons.Default.Bluetooth
+                                            CommsTransport.WIFI_DIRECT -> Icons.Default.Wifi
+                                            CommsTransport.DIRECT_IP -> Icons.Default.Language
                                         }
                                     }
-                                    commsTransport = transport
-                                },
-                                labelProvider = { it.label },
-                                iconProvider = {
-                                    when (it) {
-                                        CommsTransport.BLUETOOTH -> Icons.Default.Bluetooth
-                                        CommsTransport.WIFI_DIRECT -> Icons.Default.Wifi
-                                        CommsTransport.DIRECT_IP -> Icons.Default.Language
+                                )
+
+                                Spacer(modifier = Modifier.height(16.dp))
+
+                                when (commsTransport) {
+                                    CommsTransport.BLUETOOTH -> {
+                                        val btState by btManager.connectionState.collectAsState()
+                                        val btStatus by btManager.statusMessage.collectAsState()
+
+                                        SetupScreen(
+                                            connectionState = btState,
+                                            statusMessage = btStatus,
+                                            bluetoothAdapter = bluetoothAdapter,
+                                            onHostCall = { btManager.startHosting() },
+                                            onConnectDevice = { device -> btManager.connectToDevice(device) },
+                                            onCancel = { btManager.disconnect() }
+                                        )
+                                    }
+                                    CommsTransport.WIFI_DIRECT -> {
+                                        WifiDirectSetupScreen(wifiManager = wifiManager)
+                                    }
+                                    CommsTransport.DIRECT_IP -> {
+                                        DirectIpSetupScreen(directIpManager = directIpManager)
                                     }
                                 }
-                            )
 
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            when (commsTransport) {
-                                CommsTransport.BLUETOOTH -> {
-                                    val btState by btManager.connectionState.collectAsState()
-                                    val btStatus by btManager.statusMessage.collectAsState()
-
-                                    SetupScreen(
-                                        connectionState = btState,
-                                        statusMessage = btStatus,
-                                        bluetoothAdapter = bluetoothAdapter,
-                                        onHostCall = { btManager.startHosting() },
-                                        onConnectDevice = { device -> btManager.connectToDevice(device) },
-                                        onCancel = { btManager.disconnect() }
-                                    )
-                                }
-                                CommsTransport.WIFI_DIRECT -> {
-                                    WifiDirectSetupScreen(wifiManager = wifiManager)
-                                }
-                                CommsTransport.DIRECT_IP -> {
-                                    DirectIpSetupScreen(directIpManager = directIpManager)
-                                }
+                                Spacer(modifier = Modifier.height(110.dp))
                             }
                         }
                     }
