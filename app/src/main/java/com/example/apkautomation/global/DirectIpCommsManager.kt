@@ -13,19 +13,21 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
 import com.example.apkautomation.crypto.VoiceEncryptor
+import com.example.apkautomation.signaling.MqttSignalingEngine
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.IOException
 import java.net.*
+import java.nio.charset.StandardCharsets
 import java.util.Collections
 import kotlin.random.Random
 
 /**
- * Direct-IP Global P2P Engine with Built-in STUN NAT Traversal
- * Enables serverless, direct peer-to-peer calling over any IP network
- * (Satellite cellular, Wi-Fi, mobile hotspot, or home internet) with AES-256 CTR encryption.
- * Automatically resolves public IP/port via RFC 5389 STUN and performs UDP hole punching.
+ * Direct-IP Global P2P & 4-Digit Room Code Signaling Engine
+ * Supports:
+ * 1. Automatic 4-Digit Room Code P2P with Coordinated Hole Punching & Encrypted Relay Fallback.
+ * 2. Standalone Serverless Direct-IP dialing (with STUN NAT Traversal & LAN fallback).
  */
 class DirectIpCommsManager(
     private val context: Context,
@@ -52,6 +54,12 @@ class DirectIpCommsManager(
     private val _connectionState = MutableStateFlow(DirectIpState.IDLE)
     val connectionState = _connectionState.asStateFlow()
 
+    private val _roomMode = MutableStateFlow(RoomMode.DISCONNECTED)
+    val roomMode = _roomMode.asStateFlow()
+
+    private val _activeRoomCode = MutableStateFlow<String?>(null)
+    val activeRoomCode = _activeRoomCode.asStateFlow()
+
     private val _localIp = MutableStateFlow(detectLocalIp())
     val localIp = _localIp.asStateFlow()
 
@@ -73,7 +81,7 @@ class DirectIpCommsManager(
     private val _isSpeakerphone = MutableStateFlow(true)
     val isSpeakerphone = _isSpeakerphone.asStateFlow()
 
-    private val _statusMessage = MutableStateFlow("Direct-IP Standby (Zero Cloud)")
+    private val _statusMessage = MutableStateFlow("Ready (Room Code or Direct IP)")
     val statusMessage = _statusMessage.asStateFlow()
 
     private val _latencyMs = MutableStateFlow(0)
@@ -93,12 +101,20 @@ class DirectIpCommsManager(
     private var transmitJob: Job? = null
     private var heartbeatJob: Job? = null
     private var stunJob: Job? = null
+    private var fallbackTimerJob: Job? = null
 
     private var voiceEncryptor: VoiceEncryptor = VoiceEncryptor("1234")
     private var lastPingSentTime = 0L
 
+    private val signalingEngine = MqttSignalingEngine()
+
     init {
         refreshLocalIp()
+        initAudioTrack()
+
+        signalingEngine.onMessageListener = { topic, payload ->
+            handleSignalingMessage(topic, payload)
+        }
     }
 
     fun updateSecurityPin(pin: String) {
@@ -151,6 +167,167 @@ class DirectIpCommsManager(
         return "127.0.0.1"
     }
 
+    // ==========================================
+    // 4-DIGIT ROOM CODE SIGNALING & CALLING
+    // ==========================================
+
+    fun createRoom() {
+        disconnect()
+        val code = Random.nextInt(1000, 9999).toString()
+        _activeRoomCode.value = code
+        _roomMode.value = RoomMode.CREATING
+        _statusMessage.value = "Creating Room $code..."
+
+        scope.launch(Dispatchers.IO) {
+            initUdpSocket(DEFAULT_PORT)
+            val stunRes = StunClient.resolvePublicAddress(udpSocket)
+            val myPubIp = if (stunRes.isSuccessful) stunRes.publicIp else _localIp.value
+            val myPubPort = if (stunRes.isSuccessful) stunRes.publicPort else DEFAULT_PORT
+
+            val connected = signalingEngine.connect(scope)
+            if (connected) {
+                signalingEngine.subscribe("walkie_p2p/$code/#")
+                _roomMode.value = RoomMode.WAITING_FOR_PEER
+                _statusMessage.value = "Room $code Ready • Waiting for friend to join..."
+
+                // Announce host endpoint
+                val msg = "HOST_READY|$localSenderId|$myPubIp|$myPubPort|${_localIp.value}"
+                signalingEngine.publish("walkie_p2p/$code/signal", msg.toByteArray(StandardCharsets.UTF_8))
+            } else {
+                _roomMode.value = RoomMode.DISCONNECTED
+                _statusMessage.value = "Failed to connect to room server. Check internet."
+            }
+        }
+    }
+
+    fun joinRoom(codeRaw: String) {
+        val code = codeRaw.trim()
+        if (code.length < 4) {
+            _statusMessage.value = "Please enter a valid 4-digit code"
+            return
+        }
+
+        disconnect()
+        _activeRoomCode.value = code
+        _roomMode.value = RoomMode.CONNECTING
+        _statusMessage.value = "Joining Room $code..."
+
+        scope.launch(Dispatchers.IO) {
+            initUdpSocket(0)
+            val stunRes = StunClient.resolvePublicAddress(udpSocket)
+            val myPubIp = if (stunRes.isSuccessful) stunRes.publicIp else _localIp.value
+            val myPubPort = if (stunRes.isSuccessful) stunRes.publicPort else DEFAULT_PORT
+
+            val connected = signalingEngine.connect(scope)
+            if (connected) {
+                signalingEngine.subscribe("walkie_p2p/$code/#")
+                _statusMessage.value = "Joined Room $code • Punching Firewalls..."
+
+                // Publish JOIN announcement
+                val msg = "JOIN_REQ|$localSenderId|$myPubIp|$myPubPort|${_localIp.value}"
+                signalingEngine.publish("walkie_p2p/$code/signal", msg.toByteArray(StandardCharsets.UTF_8))
+
+                // Schedule relay fallback if UDP is blocked by strict carrier CGNAT
+                scheduleFallbackTimer(code)
+            } else {
+                _roomMode.value = RoomMode.DISCONNECTED
+                _statusMessage.value = "Failed to join room. Check internet."
+            }
+        }
+    }
+
+    private fun handleSignalingMessage(topic: String, payload: ByteArray) {
+        val room = _activeRoomCode.value ?: return
+
+        if (topic.endsWith("/audio")) {
+            // Audio Relay Packet received over cloud fallback
+            if (_roomMode.value == RoomMode.ENCRYPTED_RELAY && payload.size > 4) {
+                val senderId = ((payload[0].toInt() and 0xFF) shl 24) or
+                        ((payload[1].toInt() and 0xFF) shl 16) or
+                        ((payload[2].toInt() and 0xFF) shl 8) or
+                        (payload[3].toInt() and 0xFF)
+
+                if (senderId != localSenderId) {
+                    val encryptedAudioLen = payload.size - 4
+                    val audioBytes = voiceEncryptor.decrypt(payload, 4, encryptedAudioLen)
+                        ?: ByteArray(encryptedAudioLen).also {
+                            System.arraycopy(payload, 4, it, 0, encryptedAudioLen)
+                        }
+
+                    if (audioBytes.isNotEmpty()) {
+                        _isReceiving.value = true
+                        audioTrack?.write(audioBytes, 0, audioBytes.size)
+                        scope.launch {
+                            delay(200)
+                            _isReceiving.value = false
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        if (topic.endsWith("/signal")) {
+            val text = String(payload, StandardCharsets.UTF_8)
+            val parts = text.split("|")
+            if (parts.size < 4) return
+
+            val msgType = parts[0]
+            val senderId = parts[1].toIntOrNull() ?: return
+            if (senderId == localSenderId) return
+
+            val peerPubIp = parts[2]
+            val peerPubPort = parts[3].toIntOrNull() ?: DEFAULT_PORT
+
+            _peerIp.value = "$peerPubIp:$peerPubPort"
+            _statusMessage.value = "Synchronizing with peer..."
+
+            scope.launch(Dispatchers.IO) {
+                try {
+                    targetInetAddress = InetAddress.getByName(peerPubIp)
+                    targetPort = peerPubPort
+                    startHeartbeat()
+
+                    // Coordinated Simultaneous UDP Hole Punching
+                    for (i in 1..8) {
+                        if (!isActive || _connectionState.value == DirectIpState.CONNECTED) break
+                        sendPacket(PKT_PING, targetInetAddress!!, targetPort, ByteArray(0))
+                        delay(120)
+                    }
+
+                    // If host receiving JOIN_REQ, reply with HOST_ACK
+                    if (msgType == "JOIN_REQ") {
+                        val stunRes = StunClient.resolvePublicAddress(udpSocket)
+                        val myPubIp = if (stunRes.isSuccessful) stunRes.publicIp else _localIp.value
+                        val myPubPort = if (stunRes.isSuccessful) stunRes.publicPort else DEFAULT_PORT
+                        val ackMsg = "HOST_ACK|$localSenderId|$myPubIp|$myPubPort|${_localIp.value}"
+                        signalingEngine.publish("walkie_p2p/$room/signal", ackMsg.toByteArray(StandardCharsets.UTF_8))
+                        scheduleFallbackTimer(room)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Hole punch coordination error", e)
+                }
+            }
+        }
+    }
+
+    private fun scheduleFallbackTimer(room: String) {
+        fallbackTimerJob?.cancel()
+        fallbackTimerJob = scope.launch(Dispatchers.IO) {
+            delay(2800)
+            if (_connectionState.value != DirectIpState.CONNECTED) {
+                Log.i(TAG, "Direct UDP hole-punching timed out (Strict CGNAT). Engaging Encrypted Relay Fallback!")
+                _roomMode.value = RoomMode.ENCRYPTED_RELAY
+                _connectionState.value = DirectIpState.CONNECTED
+                _statusMessage.value = "Connected (Encrypted Cloud Relay • Zero-Drop)"
+            }
+        }
+    }
+
+    // ==========================================
+    // MANUAL DIRECT-IP DIALING
+    // ==========================================
+
     fun startHosting() {
         disconnect()
         refreshLocalIp()
@@ -169,7 +346,6 @@ class DirectIpCommsManager(
             return
         }
 
-        // Support IP:Port format (e.g. 174.56.23.90:8895) or plain IP
         val parts = trimmed.split(":")
         val targetIp = parts[0].trim()
         val port = if (parts.size > 1) parts[1].trim().toIntOrNull() ?: defaultPortFallback else defaultPortFallback
@@ -186,10 +362,9 @@ class DirectIpCommsManager(
             try {
                 targetInetAddress = InetAddress.getByName(targetIp)
                 targetPort = port
-                initUdpSocket(0) // Bind to any local ephemeral port
+                initUdpSocket(0)
                 startHeartbeat()
 
-                // Aggressive UDP Hole Punching: Send 8 rapid ping bursts
                 for (i in 1..8) {
                     if (!isActive || _connectionState.value == DirectIpState.CONNECTED) break
                     sendPacket(PKT_PING, targetInetAddress!!, targetPort, ByteArray(0))
@@ -225,9 +400,7 @@ class DirectIpCommsManager(
         }
     }
 
-    private fun startReceiver() {
-        receiveJob?.cancel()
-
+    private fun initAudioTrack() {
         val minBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, AUDIO_FORMAT)
         val bufferSize = maxOf(minBufferSize, 2048)
 
@@ -254,12 +427,16 @@ class DirectIpCommsManager(
             audioTrack?.play()
         } catch (e: Exception) {
             Log.e(TAG, "AudioTrack init error", e)
-            return
         }
+    }
+
+    private fun startReceiver() {
+        receiveJob?.cancel()
+        initAudioTrack()
 
         receiveJob = scope.launch(Dispatchers.IO) {
             val socket = udpSocket ?: return@launch
-            val buffer = ByteArray(bufferSize + 64)
+            val buffer = ByteArray(2048 + 64)
             val packet = DatagramPacket(buffer, buffer.size)
 
             while (isActive && !socket.isClosed) {
@@ -275,7 +452,12 @@ class DirectIpCommsManager(
 
                     if (senderId == localSenderId) continue
 
-                    // Lock target address on incoming packet
+                    // Direct UDP packet verified! Cancel relay fallback timer
+                    fallbackTimerJob?.cancel()
+                    if (_roomMode.value != RoomMode.DISCONNECTED) {
+                        _roomMode.value = RoomMode.DIRECT_P2P
+                    }
+
                     if (targetInetAddress == null) {
                         targetInetAddress = packet.address
                         targetPort = packet.port
@@ -316,12 +498,8 @@ class DirectIpCommsManager(
                                 }
                             }
                         }
-                        PKT_KEEPALIVE -> {
-                            // NAT pinhole keepalive packet received
-                        }
-                        PKT_DISCONNECT -> {
-                            disconnect()
-                        }
+                        PKT_KEEPALIVE -> {}
+                        PKT_DISCONNECT -> { disconnect() }
                     }
                 } catch (e: IOException) {
                     break
@@ -343,7 +521,6 @@ class DirectIpCommsManager(
                     sendPacket(PKT_PING, peer, targetPort, ByteArray(0))
                 }
 
-                // Send NAT keepalive every 12 seconds to prevent carrier firewall timeouts
                 keepaliveCounter++
                 if (keepaliveCounter % 6 == 0 && peer != null) {
                     sendPacket(PKT_KEEPALIVE, peer, targetPort, ByteArray(0))
@@ -373,12 +550,12 @@ class DirectIpCommsManager(
 
     @SuppressLint("MissingPermission")
     fun startTalking() {
-        if (_connectionState.value != DirectIpState.CONNECTED && targetInetAddress == null) return
+        if (_connectionState.value != DirectIpState.CONNECTED && targetInetAddress == null && _roomMode.value != RoomMode.ENCRYPTED_RELAY) return
         if (_isTransmitting.value) return
 
         triggerHapticFeedback(50)
         _isTransmitting.value = true
-        _statusMessage.value = "Transmitting (Global Direct-IP)..."
+        _statusMessage.value = "Transmitting Voice..."
 
         val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, AUDIO_FORMAT)
         val bufferSize = maxOf(minBufferSize, 2048)
@@ -409,9 +586,23 @@ class DirectIpCommsManager(
                     val read = record.read(rawBuffer, 0, rawBuffer.size)
                     if (read > 0) {
                         val encryptedAudio = voiceEncryptor.encrypt(rawBuffer, 0, read)
-                        val target = targetInetAddress
-                        if (target != null) {
-                            sendPacket(PKT_AUDIO, target, targetPort, encryptedAudio)
+
+                        if (_roomMode.value == RoomMode.ENCRYPTED_RELAY) {
+                            val room = _activeRoomCode.value
+                            if (room != null) {
+                                val relayPacket = ByteArray(4 + encryptedAudio.size)
+                                relayPacket[0] = ((localSenderId shr 24) and 0xFF).toByte()
+                                relayPacket[1] = ((localSenderId shr 16) and 0xFF).toByte()
+                                relayPacket[2] = ((localSenderId shr 8) and 0xFF).toByte()
+                                relayPacket[3] = (localSenderId and 0xFF).toByte()
+                                System.arraycopy(encryptedAudio, 0, relayPacket, 4, encryptedAudio.size)
+                                signalingEngine.publish("walkie_p2p/$room/audio", relayPacket)
+                            }
+                        } else {
+                            val target = targetInetAddress
+                            if (target != null) {
+                                sendPacket(PKT_AUDIO, target, targetPort, encryptedAudio)
+                            }
                         }
                     }
                 }
@@ -434,7 +625,10 @@ class DirectIpCommsManager(
         transmitJob = null
         triggerHapticFeedback(30)
         if (_connectionState.value == DirectIpState.CONNECTED) {
-            _statusMessage.value = "Channel Active (${_peerIp.value})"
+            _statusMessage.value = if (_roomMode.value == RoomMode.ENCRYPTED_RELAY)
+                "Channel Active (Encrypted Relay)"
+            else
+                "Channel Active (${_peerIp.value})"
         }
     }
 
@@ -454,6 +648,10 @@ class DirectIpCommsManager(
             }
         }
 
+        signalingEngine.disconnect()
+        fallbackTimerJob?.cancel()
+        fallbackTimerJob = null
+
         heartbeatJob?.cancel()
         heartbeatJob = null
 
@@ -470,23 +668,19 @@ class DirectIpCommsManager(
         audioRecord = null
 
         try {
-            audioTrack?.stop()
-            audioTrack?.release()
-        } catch (_: Exception) {}
-        audioTrack = null
-
-        try {
             udpSocket?.close()
         } catch (_: Exception) {}
         udpSocket = null
 
         targetInetAddress = null
         _peerIp.value = null
+        _activeRoomCode.value = null
+        _roomMode.value = RoomMode.DISCONNECTED
         _connectionState.value = DirectIpState.IDLE
         _isReceiving.value = false
         _isTransmitting.value = false
         _latencyMs.value = 0
-        _statusMessage.value = "Direct-IP Link Disconnected"
+        _statusMessage.value = "Link Disconnected"
     }
 
     private fun triggerHapticFeedback(millis: Long) {
@@ -508,4 +702,13 @@ enum class DirectIpState {
     LISTENING,
     CONNECTING,
     CONNECTED
+}
+
+enum class RoomMode {
+    DISCONNECTED,
+    CREATING,
+    WAITING_FOR_PEER,
+    CONNECTING,
+    DIRECT_P2P,
+    ENCRYPTED_RELAY
 }
