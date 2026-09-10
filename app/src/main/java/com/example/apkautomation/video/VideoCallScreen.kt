@@ -133,7 +133,7 @@ fun VideoCallScreen(
                 .clickable { isAspectFill = !isAspectFill }
         )
 
-        // 2. Inset Card: Local Self / Tactical Camera Preview
+        // 2. Inset Card: Local Self / Tactical Camera Preview (Camera2 native portrait stream)
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -143,8 +143,8 @@ fun VideoCallScreen(
             Surface(
                 modifier = Modifier
                     .padding(top = 40.dp)
-                    .width(115.dp)
-                    .height(155.dp)
+                    .width(114.dp)
+                    .height(152.dp)
                     .shadow(12.dp, RoundedCornerShape(16.dp)),
                 shape = RoundedCornerShape(16.dp),
                 color = Color(0xFF1E1E1E),
@@ -156,28 +156,12 @@ fun VideoCallScreen(
                             surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                 override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                                     st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
-                                    applyTextureTransform(
-                                        view = this@apply,
-                                        viewWidth = width,
-                                        viewHeight = height,
-                                        rotationDegrees = localRotation,
-                                        isMirror = isFacingFront,
-                                        aspectFill = true
-                                    )
                                     val surface = Surface(st)
                                     localSurface = surface
                                     videoManager.setLocalPreviewSurface(surface)
                                 }
                                 override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
                                     st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
-                                    applyTextureTransform(
-                                        view = this@apply,
-                                        viewWidth = width,
-                                        viewHeight = height,
-                                        rotationDegrees = localRotation,
-                                        isMirror = isFacingFront,
-                                        aspectFill = true
-                                    )
                                 }
                                 override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                                     videoManager.setLocalPreviewSurface(null)
@@ -186,18 +170,6 @@ fun VideoCallScreen(
                                 }
                                 override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                             }
-                        }
-                    },
-                    update = { textureView ->
-                        if (textureView.isAvailable && textureView.width > 0 && textureView.height > 0) {
-                            applyTextureTransform(
-                                view = textureView,
-                                viewWidth = textureView.width,
-                                viewHeight = textureView.height,
-                                rotationDegrees = localRotation,
-                                isMirror = isFacingFront,
-                                aspectFill = true
-                            )
                         }
                     },
                     modifier = Modifier.fillMaxSize()
