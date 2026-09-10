@@ -274,41 +274,58 @@ fun DirectIpSetupScreen(
 
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Button(
                                             onClick = {
-                                                directIpManager.sendWakeAlert(contact)
-                                                Toast.makeText(context, "🚨 Paging ${contact.name}! Alarm triggered.", Toast.LENGTH_SHORT).show()
+                                                directIpManager.pageChannel1(contact)
+                                                Toast.makeText(context, "📢 Paging ${contact.name} to Channel 1!", Toast.LENGTH_SHORT).show()
                                             },
                                             modifier = Modifier
-                                                .weight(1.2f)
-                                                .height(42.dp),
+                                                .weight(1.35f)
+                                                .height(44.dp),
                                             shape = RoundedCornerShape(8.dp),
                                             colors = ButtonDefaults.buttonColors(
-                                                containerColor = Color(0xFFD32F2F),
+                                                containerColor = Color(0xFFE65100),
                                                 contentColor = Color.White
                                             )
                                         ) {
-                                            Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("🚨 WAKE / RING", fontWeight = FontWeight.Black, fontSize = 11.sp)
+                                            Icon(Icons.Default.Campaign, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("PAGE: CH 1", fontWeight = FontWeight.Black, fontSize = 11.sp)
                                         }
 
                                         Button(
                                             onClick = { directIpManager.callContact(contact) },
                                             modifier = Modifier
                                                 .weight(1f)
-                                                .height(42.dp),
+                                                .height(44.dp),
                                             shape = RoundedCornerShape(8.dp),
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = ProTheme.Emerald,
                                                 contentColor = Color.Black
                                             )
                                         ) {
-                                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(15.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
                                             Text("CALL", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                        }
+
+                                        OutlinedButton(
+                                            onClick = {
+                                                directIpManager.sendWakeAlert(contact)
+                                                Toast.makeText(context, "🚨 Siren alarm sent to ${contact.name}!", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier
+                                                .height(44.dp)
+                                                .width(48.dp),
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, Color(0xFFD32F2F)),
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF5252)),
+                                            contentPadding = PaddingValues(0.dp)
+                                        ) {
+                                            Icon(Icons.Default.NotificationsActive, contentDescription = "Ring Siren", modifier = Modifier.size(18.dp))
                                         }
                                     }
                                 }

@@ -87,9 +87,14 @@ class WalkieTalkieService : Service() {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
 
+                val isCh1 = (roomCode == "1001")
+                val title = if (isCh1) "📢 WALKIE-TALKIE: GET ON CH 1" else "🚨 INCOMING WALKIE-TALKIE CALL"
+                val message = if (isCh1) "$callerName wants you on Channel 1! Tap to answer." else "$callerName is calling you on Room $roomCode! Tap to answer."
+                val actionLabel = if (isCh1) "JOIN CH 1 NOW" else "ANSWER & TALK"
+
                 val notification = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
-                    .setContentTitle("🚨 INCOMING WALKIE-TALKIE CALL")
-                    .setContentText("$callerName is paging you on Room $roomCode! Tap to answer.")
+                    .setContentTitle(title)
+                    .setContentText(message)
                     .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                     .setPriority(NotificationCompat.PRIORITY_MAX)
                     .setCategory(NotificationCompat.CATEGORY_CALL)
@@ -98,7 +103,7 @@ class WalkieTalkieService : Service() {
                     .setContentIntent(pendingIntent)
                     .addAction(
                         android.R.drawable.ic_menu_call,
-                        "ANSWER & TALK",
+                        actionLabel,
                         pendingIntent
                     )
                     .build()

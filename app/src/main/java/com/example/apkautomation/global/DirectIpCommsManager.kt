@@ -317,6 +317,19 @@ class DirectIpCommsManager(
         }
     }
 
+    fun pageChannel1(contact: SavedContact) {
+        val code = "1001"
+        _activeCallLabel.value = "Channel 1"
+        _statusMessage.value = "📢 Paging ${contact.name} to Channel 1..."
+        scope.launch(Dispatchers.IO) {
+            val alertMsg = "PAGE_ALERT|$myPhoneId|${_myCallSign.value}|$code|${System.currentTimeMillis()}"
+            signalingEngine.publish("walkie_p2p/alerts/${contact.id}", alertMsg.toByteArray(StandardCharsets.UTF_8))
+            withContext(Dispatchers.Main) {
+                joinRoom(code)
+            }
+        }
+    }
+
     fun sendWakeAlert(contact: SavedContact) {
         val code = Random.nextInt(1000, 9999).toString()
         _activeCallLabel.value = "Call with ${contact.name}"
