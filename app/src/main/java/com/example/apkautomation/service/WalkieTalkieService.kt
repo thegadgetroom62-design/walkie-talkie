@@ -32,6 +32,7 @@ class WalkieTalkieService : Service() {
         const val ACTION_STOP = "com.example.apkautomation.STOP_SERVICE"
         const val ALERT_CHANNEL_ID = "walkie_talkie_alert_channel"
         const val ALERT_NOTIFICATION_ID = 8822
+        const val EXTRA_STATUS = "extra_status"
         const val EXTRA_AUTO_JOIN_ROOM = "extra_auto_join_room"
 
         fun start(context: Context, status: String = "Listening on Loudspeaker • Screen-Off Active") {
