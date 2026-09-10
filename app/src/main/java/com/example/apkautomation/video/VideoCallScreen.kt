@@ -7,6 +7,7 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,9 +45,12 @@ fun VideoCallScreen(
     val isTorchOn by videoManager.isTorchEnabled.collectAsState()
     val fps by videoManager.fps.collectAsState()
     val statusText by videoManager.statusText.collectAsState()
+    val localRotation by videoManager.localCameraRotation.collectAsState()
+    val remoteRotation by videoManager.remoteRotation.collectAsState()
 
     var remoteSurface by remember { mutableStateOf<Surface?>(null) }
     var localSurface by remember { mutableStateOf<Surface?>(null) }
+    var isAspectFill by remember { mutableStateOf(false) }
 
     // Start video call once surfaces are ready
     LaunchedEffect(remoteSurface, localSurface, peerIp) {
@@ -73,21 +77,35 @@ fun VideoCallScreen(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // 1. Full Screen: Remote Peer's Incoming Video Feed
+        // 1. Full Screen: Remote Peer's Incoming Video Feed (Aspect-Fit default, tap to toggle Fill)
         AndroidView(
             factory = { context ->
                 TextureView(context).apply {
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                             st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
-                            applyPortraitTransform(this@apply, width, height, isMirror = false)
+                            applyTextureTransform(
+                                view = this@apply,
+                                viewWidth = width,
+                                viewHeight = height,
+                                rotationDegrees = remoteRotation,
+                                isMirror = false,
+                                aspectFill = isAspectFill
+                            )
                             val surface = Surface(st)
                             remoteSurface = surface
                             videoManager.setRemoteDisplaySurface(surface)
                         }
                         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
                             st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
-                            applyPortraitTransform(this@apply, width, height, isMirror = false)
+                            applyTextureTransform(
+                                view = this@apply,
+                                viewWidth = width,
+                                viewHeight = height,
+                                rotationDegrees = remoteRotation,
+                                isMirror = false,
+                                aspectFill = isAspectFill
+                            )
                         }
                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                             videoManager.setRemoteDisplaySurface(null)
@@ -98,7 +116,21 @@ fun VideoCallScreen(
                     }
                 }
             },
-            modifier = Modifier.fillMaxSize()
+            update = { textureView ->
+                if (textureView.isAvailable && textureView.width > 0 && textureView.height > 0) {
+                    applyTextureTransform(
+                        view = textureView,
+                        viewWidth = textureView.width,
+                        viewHeight = textureView.height,
+                        rotationDegrees = remoteRotation,
+                        isMirror = false,
+                        aspectFill = isAspectFill
+                    )
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable { isAspectFill = !isAspectFill }
         )
 
         // 2. Inset Card: Local Self / Tactical Camera Preview
@@ -110,9 +142,9 @@ fun VideoCallScreen(
         ) {
             Surface(
                 modifier = Modifier
+                    .padding(top = 40.dp)
                     .width(115.dp)
                     .height(155.dp)
-                    .padding(top = 40.dp)
                     .shadow(12.dp, RoundedCornerShape(16.dp)),
                 shape = RoundedCornerShape(16.dp),
                 color = Color(0xFF1E1E1E),
@@ -124,14 +156,28 @@ fun VideoCallScreen(
                             surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                 override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                                     st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
-                                    applyPortraitTransform(this@apply, width, height, isMirror = isFacingFront)
+                                    applyTextureTransform(
+                                        view = this@apply,
+                                        viewWidth = width,
+                                        viewHeight = height,
+                                        rotationDegrees = localRotation,
+                                        isMirror = isFacingFront,
+                                        aspectFill = true
+                                    )
                                     val surface = Surface(st)
                                     localSurface = surface
                                     videoManager.setLocalPreviewSurface(surface)
                                 }
                                 override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
                                     st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
-                                    applyPortraitTransform(this@apply, width, height, isMirror = isFacingFront)
+                                    applyTextureTransform(
+                                        view = this@apply,
+                                        viewWidth = width,
+                                        viewHeight = height,
+                                        rotationDegrees = localRotation,
+                                        isMirror = isFacingFront,
+                                        aspectFill = true
+                                    )
                                 }
                                 override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                                     videoManager.setLocalPreviewSurface(null)
@@ -140,6 +186,18 @@ fun VideoCallScreen(
                                 }
                                 override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                             }
+                        }
+                    },
+                    update = { textureView ->
+                        if (textureView.isAvailable && textureView.width > 0 && textureView.height > 0) {
+                            applyTextureTransform(
+                                view = textureView,
+                                viewWidth = textureView.width,
+                                viewHeight = textureView.height,
+                                rotationDegrees = localRotation,
+                                isMirror = isFacingFront,
+                                aspectFill = true
+                            )
                         }
                     },
                     modifier = Modifier.fillMaxSize()
@@ -310,32 +368,48 @@ fun VideoCallScreen(
 
 /**
  * Transforms camera and video frames to render in true upright portrait orientation
- * (aspect-fill center crop with optional front-camera horizontal flip).
+ * with 1:1 pixel square aspect ratio and no stretching or unintended zoom.
  */
-private fun applyPortraitTransform(view: TextureView, viewWidth: Int, viewHeight: Int, isMirror: Boolean) {
-    if (viewWidth == 0 || viewHeight == 0) return
+private fun applyTextureTransform(
+    view: TextureView,
+    viewWidth: Int,
+    viewHeight: Int,
+    bufWidth: Int = WifiVideoManager.VIDEO_WIDTH,
+    bufHeight: Int = WifiVideoManager.VIDEO_HEIGHT,
+    rotationDegrees: Int = 270,
+    isMirror: Boolean = false,
+    aspectFill: Boolean = false
+) {
+    if (viewWidth <= 0 || viewHeight <= 0 || bufWidth <= 0 || bufHeight <= 0) return
 
     val matrix = Matrix()
-    val viewRect = RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
-    val centerX = viewRect.centerX()
-    val centerY = viewRect.centerY()
+    val centerX = viewWidth / 2f
+    val centerY = viewHeight / 2f
 
-    // 90-degree rotation to orient landscape buffer (640x480) into portrait screen
-    matrix.postRotate(90f, centerX, centerY)
+    // 1. TextureView default stretches [0, bufWidth] to viewWidth, and [0, bufHeight] to viewHeight.
+    // Scale by (bufWidth / viewWidth, bufHeight / viewHeight) to restore native 1:1 pixel square aspect ratio:
+    matrix.setScale(bufWidth.toFloat() / viewWidth, bufHeight.toFloat() / viewHeight, centerX, centerY)
 
-    // After 90-degree rotation, buffer dimensions are effectively swapped (480 wide, 640 high)
-    val rotatedBufWidth = WifiVideoManager.VIDEO_HEIGHT.toFloat()
-    val rotatedBufHeight = WifiVideoManager.VIDEO_WIDTH.toFloat()
+    // 2. Rotate to upright portrait orientation:
+    matrix.postRotate(rotationDegrees.toFloat(), centerX, centerY)
 
-    // Aspect-Fill: Scale so the video fills the entire view without black bars or distortion
-    val scale = maxOf(viewWidth / rotatedBufWidth, viewHeight / rotatedBufHeight)
-    matrix.postScale(scale, scale, centerX, centerY)
-
-    // Front-camera selfie mirror
+    // 3. Selfie mirror if requested (front camera preview):
     if (isMirror) {
         matrix.postScale(-1f, 1f, centerX, centerY)
     }
 
+    // 4. Calculate proper scaling to fit or fill the view without distortion:
+    val isRotated = (rotationDegrees == 90 || rotationDegrees == 270)
+    val effectiveBufWidth = if (isRotated) bufHeight.toFloat() else bufWidth.toFloat()
+    val effectiveBufHeight = if (isRotated) bufWidth.toFloat() else bufHeight.toFloat()
+
+    val scaleX = viewWidth.toFloat() / effectiveBufWidth
+    val scaleY = viewHeight.toFloat() / effectiveBufHeight
+    val finalScale = if (aspectFill) maxOf(scaleX, scaleY) else minOf(scaleX, scaleY)
+
+    matrix.postScale(finalScale, finalScale, centerX, centerY)
+
     view.setTransform(matrix)
 }
+
 

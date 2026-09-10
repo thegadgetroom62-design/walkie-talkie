@@ -1,4 +1,4 @@
-﻿package com.example.apkautomation.video
+package com.example.apkautomation.video
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -70,6 +70,12 @@ class WifiVideoManager(
 
     private val _fps = MutableStateFlow(0)
     val fps = _fps.asStateFlow()
+
+    private val _localCameraRotation = MutableStateFlow(270)
+    val localCameraRotation = _localCameraRotation.asStateFlow()
+
+    private val _remoteRotation = MutableStateFlow(270)
+    val remoteRotation = _remoteRotation.asStateFlow()
 
     private val _statusText = MutableStateFlow("Video Standby")
     val statusText = _statusText.asStateFlow()
@@ -247,12 +253,18 @@ class WifiVideoManager(
                 val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
                 if (facing == targetFacing) {
                     selectedCameraId = id
+                    val sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                        ?: if (targetFacing == CameraCharacteristics.LENS_FACING_FRONT) 270 else 90
+                    _localCameraRotation.value = sensor
                     break
                 }
             }
 
             if (selectedCameraId == null && cameraManager.cameraIdList.isNotEmpty()) {
                 selectedCameraId = cameraManager.cameraIdList[0]
+                val characteristics = cameraManager.getCameraCharacteristics(selectedCameraId)
+                val sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                _localCameraRotation.value = sensor
             }
 
             selectedCameraId?.let { id ->
@@ -458,16 +470,20 @@ class WifiVideoManager(
                             val rawData = ByteArray(bufferInfo.size)
                             outputBuffer.get(rawData)
 
-                            val flags = bufferInfo.flags
+                            val rawFlags = bufferInfo.flags
                             val pts = bufferInfo.presentationTimeUs
 
                             // Encrypt with AES-256 CTR using Vault PIN
                             val encryptedData = voiceEncryptor.encrypt(rawData)
 
-                            // Frame wire format: [4-byte length][4-byte flags][8-byte pts][payload]
+                            // Pack sender camera rotation (e.g. 270 for front, 90 for back) into flags bits 8..23
+                            val rotationTag = _localCameraRotation.value
+                            val combinedFlags = (rawFlags and 0xFF) or (rotationTag shl 8)
+
+                            // Frame wire format: [4-byte length][4-byte combinedFlags][8-byte pts][payload]
                             synchronized(outStream) {
                                 outStream.writeInt(encryptedData.size)
-                                outStream.writeInt(flags)
+                                outStream.writeInt(combinedFlags)
                                 outStream.writeLong(pts)
                                 outStream.write(encryptedData)
                                 outStream.flush()
@@ -500,7 +516,15 @@ class WifiVideoManager(
                     val frameLength = inStream.readInt()
                     if (frameLength <= 0 || frameLength > 2_000_000) continue
 
-                    val flags = inStream.readInt()
+                    val rawFlags = inStream.readInt()
+                    val codecFlags = rawFlags and 0xFF
+                    val senderRotation = (rawFlags shr 8) and 0xFFFF
+                    if (senderRotation == 90 || senderRotation == 180 || senderRotation == 270) {
+                        if (_remoteRotation.value != senderRotation) {
+                            _remoteRotation.value = senderRotation
+                        }
+                    }
+
                     val pts = inStream.readLong()
 
                     val encryptedFrame = ByteArray(frameLength)
@@ -520,7 +544,7 @@ class WifiVideoManager(
                             0,
                             decryptedFrame.size,
                             pts,
-                            flags
+                            codecFlags
                         )
                     }
 

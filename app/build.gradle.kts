@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.apkautomation"
         minSdk = 24
         targetSdk = 35
-        versionCode = 18
-        versionName = "2.1.0"
+        versionCode = 19
+        versionName = "2.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
