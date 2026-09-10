@@ -10,6 +10,8 @@ import android.content.pm.PackageManager
 import android.net.wifi.p2p.WifiP2pDevice
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -67,6 +69,10 @@ import com.example.apkautomation.bluetooth.ConnectionState
 import com.example.apkautomation.global.DirectIpCommsManager
 import com.example.apkautomation.global.DirectIpSetupScreen
 import com.example.apkautomation.global.DirectIpState
+import com.example.apkautomation.global.RoomMode
+import com.example.apkautomation.service.WalkieTalkieService
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 import com.example.apkautomation.mapper.FloorPlanMapScreen
 import com.example.apkautomation.mapper.WifiMapperEngine
 import com.example.apkautomation.radar.RadarScreen
@@ -95,6 +101,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Enable screen-on and show-when-locked so walkie-talkie is accessible when phone is locked
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         bluetoothAdapter = bluetoothManager?.adapter
 
@@ -105,6 +123,29 @@ class MainActivity : ComponentActivity() {
         videoManager = WifiVideoManager(this, lifecycleScope)
         radarEngine = WifiRadarEngine(this, lifecycleScope)
         mapperEngine = WifiMapperEngine(this, lifecycleScope)
+
+        // Automatically start background WakeLock service when any call/room is active
+        lifecycleScope.launch {
+            combine(
+                directIpManager.connectionState,
+                directIpManager.roomMode,
+                directIpManager.activeRoomCode,
+                wifiVoiceManager.isConnected,
+                btVoiceManager.isConnected
+            ) { ipState, roomMode, roomCode, wifiConn, btConn ->
+                ipState == DirectIpState.CONNECTED ||
+                roomMode != RoomMode.DISCONNECTED ||
+                roomCode != null ||
+                wifiConn ||
+                btConn
+            }.collect { isCallActive ->
+                if (isCallActive) {
+                    WalkieTalkieService.start(this@MainActivity)
+                } else {
+                    WalkieTalkieService.stop(this@MainActivity)
+                }
+            }
+        }
 
         setContent {
             MaterialTheme(
@@ -137,8 +178,73 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            if (event?.repeatCount == 0) {
+                val handled = triggerPttDown()
+                if (handled) return true
+            } else {
+                if (isAnyCallActive()) return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            val handled = triggerPttUp()
+            if (handled) return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    private fun isAnyCallActive(): Boolean {
+        return directIpManager.connectionState.value == DirectIpState.CONNECTED ||
+               directIpManager.roomMode.value != RoomMode.DISCONNECTED ||
+               directIpManager.activeRoomCode.value != null ||
+               wifiVoiceManager.isConnected.value ||
+               btVoiceManager.isConnected.value
+    }
+
+    private fun triggerPttDown(): Boolean {
+        if (directIpManager.connectionState.value == DirectIpState.CONNECTED ||
+            directIpManager.roomMode.value != RoomMode.DISCONNECTED ||
+            directIpManager.activeRoomCode.value != null) {
+            directIpManager.startTalking()
+            return true
+        }
+        if (wifiVoiceManager.isConnected.value) {
+            wifiVoiceManager.startTalking()
+            return true
+        }
+        if (btVoiceManager.isConnected.value) {
+            btVoiceManager.startTalking()
+            return true
+        }
+        return false
+    }
+
+    private fun triggerPttUp(): Boolean {
+        if (directIpManager.connectionState.value == DirectIpState.CONNECTED ||
+            directIpManager.roomMode.value != RoomMode.DISCONNECTED ||
+            directIpManager.activeRoomCode.value != null) {
+            directIpManager.stopTalking()
+            return true
+        }
+        if (wifiVoiceManager.isConnected.value) {
+            wifiVoiceManager.stopTalking()
+            return true
+        }
+        if (btVoiceManager.isConnected.value) {
+            btVoiceManager.stopTalking()
+            return true
+        }
+        return false
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        WalkieTalkieService.stop(this)
         btVoiceManager.disconnect()
         wifiVoiceManager.disconnect()
         wifiVoiceManager.unregister()
@@ -163,6 +269,7 @@ class MainActivity : ComponentActivity() {
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         return permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED

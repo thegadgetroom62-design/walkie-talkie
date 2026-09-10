@@ -685,6 +685,7 @@ class WifiDirectVoiceManager(
 
     private fun applySpeakerphoneRouting(enabled: Boolean) {
         try {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 if (enabled) {
                     val speaker = audioManager.availableCommunicationDevices.firstOrNull {
@@ -699,6 +700,14 @@ class WifiDirectVoiceManager(
             } else {
                 @Suppress("DEPRECATION")
                 audioManager.isSpeakerphoneOn = enabled
+            }
+
+            // Default to 100% maximum volume for walkie-talkie loudspeaker
+            if (enabled) {
+                val maxCallVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+                audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxCallVol, 0)
+                val maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVol, 0)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Speakerphone routing error", e)
