@@ -1,4 +1,4 @@
-﻿package com.example.apkautomation.service
+package com.example.apkautomation.service
 
 import android.annotation.SuppressLint
 import android.app.Notification
@@ -189,7 +189,12 @@ class WalkieTalkieService : Service() {
 
     private fun stopForegroundService() {
         releaseWakeLocks()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(Service.STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         stopSelf()
     }
 

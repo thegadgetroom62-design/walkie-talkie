@@ -130,14 +130,20 @@ class MainActivity : ComponentActivity() {
                 directIpManager.connectionState,
                 directIpManager.roomMode,
                 directIpManager.activeRoomCode,
-                wifiVoiceManager.isConnected,
-                btVoiceManager.isConnected
-            ) { ipState, roomMode, roomCode, wifiConn, btConn ->
+                wifiVoiceManager.connectionState,
+                btVoiceManager.connectionState
+            ) { values ->
+                val ipState = values[0] as DirectIpState
+                val roomMode = values[1] as RoomMode
+                val roomCode = values[2] as? String
+                val wifiState = values[3] as ConnectionState
+                val btState = values[4] as ConnectionState
+
                 ipState == DirectIpState.CONNECTED ||
                 roomMode != RoomMode.DISCONNECTED ||
                 roomCode != null ||
-                wifiConn ||
-                btConn
+                wifiState == ConnectionState.CONNECTED ||
+                btState == ConnectionState.CONNECTED
             }.collect { isCallActive ->
                 if (isCallActive) {
                     WalkieTalkieService.start(this@MainActivity)
@@ -202,8 +208,8 @@ class MainActivity : ComponentActivity() {
         return directIpManager.connectionState.value == DirectIpState.CONNECTED ||
                directIpManager.roomMode.value != RoomMode.DISCONNECTED ||
                directIpManager.activeRoomCode.value != null ||
-               wifiVoiceManager.isConnected.value ||
-               btVoiceManager.isConnected.value
+               wifiVoiceManager.connectionState.value == ConnectionState.CONNECTED ||
+               btVoiceManager.connectionState.value == ConnectionState.CONNECTED
     }
 
     private fun triggerPttDown(): Boolean {
@@ -213,11 +219,11 @@ class MainActivity : ComponentActivity() {
             directIpManager.startTalking()
             return true
         }
-        if (wifiVoiceManager.isConnected.value) {
+        if (wifiVoiceManager.connectionState.value == ConnectionState.CONNECTED) {
             wifiVoiceManager.startTalking()
             return true
         }
-        if (btVoiceManager.isConnected.value) {
+        if (btVoiceManager.connectionState.value == ConnectionState.CONNECTED) {
             btVoiceManager.startTalking()
             return true
         }
@@ -231,11 +237,11 @@ class MainActivity : ComponentActivity() {
             directIpManager.stopTalking()
             return true
         }
-        if (wifiVoiceManager.isConnected.value) {
+        if (wifiVoiceManager.connectionState.value == ConnectionState.CONNECTED) {
             wifiVoiceManager.stopTalking()
             return true
         }
-        if (btVoiceManager.isConnected.value) {
+        if (btVoiceManager.connectionState.value == ConnectionState.CONNECTED) {
             btVoiceManager.stopTalking()
             return true
         }
