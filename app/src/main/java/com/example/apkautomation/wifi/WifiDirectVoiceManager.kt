@@ -61,6 +61,8 @@ class WifiDirectVoiceManager(
         private const val PKT_PING: Byte = 1
         private const val PKT_PONG: Byte = 2
         private const val PKT_AUDIO: Byte = 3
+        private const val PKT_VIDEO_CALL_REQ: Byte = 4
+        private const val PKT_VIDEO_CALL_END: Byte = 5
     }
 
     // Unique random ID for this session to filter out self-broadcast echo
@@ -104,6 +106,9 @@ class WifiDirectVoiceManager(
 
     private val _isFullDuplexVoice = MutableStateFlow(false)
     val isFullDuplexVoice = _isFullDuplexVoice.asStateFlow()
+
+    private val _isVideoCallActive = MutableStateFlow(false)
+    val isVideoCallActive = _isVideoCallActive.asStateFlow()
 
     private var udpSocket: DatagramSocket? = null
     private var tcpServerSocket: ServerSocket? = null
@@ -488,6 +493,14 @@ class WifiDirectVoiceManager(
                                 }
                             }
                         }
+                        PKT_VIDEO_CALL_REQ -> {
+                            _isVideoCallActive.value = true
+                            startFullDuplexVoice()
+                        }
+                        PKT_VIDEO_CALL_END -> {
+                            _isVideoCallActive.value = false
+                            stopFullDuplexVoice()
+                        }
                     }
                 } catch (e: IOException) {
                     break
@@ -684,6 +697,7 @@ class WifiDirectVoiceManager(
         _peerAddressFlow.value = null
         _isGroupOwnerFlow.value = false
         _isFullDuplexVoice.value = false
+        _isVideoCallActive.value = false
         _connectedDeviceName.value = null
         _connectionState.value = ConnectionState.IDLE
         _isReceiving.value = false
@@ -700,5 +714,29 @@ class WifiDirectVoiceManager(
         if (!_isFullDuplexVoice.value) return
         _isFullDuplexVoice.value = false
         stopTalking()
+    }
+
+    fun requestStartVideoCall() {
+        _isVideoCallActive.value = true
+        startFullDuplexVoice()
+        scope.launch(Dispatchers.IO) {
+            for (i in 1..4) {
+                val peer = targetPeerAddress ?: (if (!isGroupOwner) InetAddress.getByName("192.168.49.1") else null)
+                peer?.let { sendPacket(PKT_VIDEO_CALL_REQ, it, ByteArray(0)) }
+                delay(120)
+            }
+        }
+    }
+
+    fun requestEndVideoCall() {
+        _isVideoCallActive.value = false
+        stopFullDuplexVoice()
+        scope.launch(Dispatchers.IO) {
+            for (i in 1..4) {
+                val peer = targetPeerAddress ?: (if (!isGroupOwner) InetAddress.getByName("192.168.49.1") else null)
+                peer?.let { sendPacket(PKT_VIDEO_CALL_END, it, ByteArray(0)) }
+                delay(120)
+            }
+        }
     }
 }

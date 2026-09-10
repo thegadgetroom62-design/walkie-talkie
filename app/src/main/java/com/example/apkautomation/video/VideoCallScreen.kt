@@ -1,7 +1,8 @@
-package com.example.apkautomation.video
+﻿package com.example.apkautomation.video
 
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -21,7 +22,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.example.apkautomation.ui.BentoCard
 import com.example.apkautomation.ui.ProTheme
 import java.net.InetAddress
 
@@ -43,19 +43,19 @@ fun VideoCallScreen(
     val fps by videoManager.fps.collectAsState()
     val statusText by videoManager.statusText.collectAsState()
 
-    var remoteSurfaceHolder by remember { mutableStateOf<SurfaceHolder?>(null) }
-    var localSurfaceHolder by remember { mutableStateOf<SurfaceHolder?>(null) }
+    var remoteSurface by remember { mutableStateOf<Surface?>(null) }
+    var localSurface by remember { mutableStateOf<Surface?>(null) }
 
     // Start video call once surfaces are ready
-    LaunchedEffect(remoteSurfaceHolder, localSurfaceHolder, peerIp) {
-        val remoteHolder = remoteSurfaceHolder
-        val localHolder = localSurfaceHolder
-        if (remoteHolder != null && localHolder != null && !isVideoActive) {
+    LaunchedEffect(remoteSurface, localSurface, peerIp) {
+        val remote = remoteSurface
+        val local = localSurface
+        if (remote != null && local != null && !isVideoActive) {
             videoManager.startVideoCall(
                 peerIp = peerIp,
                 isHost = isGroupOwner,
-                localSurface = localHolder.surface,
-                remoteSurface = remoteHolder.surface
+                localSurface = local,
+                remoteSurface = remote
             )
         }
     }
@@ -74,16 +74,24 @@ fun VideoCallScreen(
         // 1. Full Screen: Remote Peer's Incoming Video Feed
         AndroidView(
             factory = { context ->
-                SurfaceView(context).apply {
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) {
-                            remoteSurfaceHolder = holder
+                TextureView(context).apply {
+                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
+                            st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
+                            val surface = Surface(st)
+                            remoteSurface = surface
+                            videoManager.setRemoteDisplaySurface(surface)
                         }
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                            remoteSurfaceHolder = null
+                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
+                            st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
                         }
-                    })
+                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                            videoManager.setRemoteDisplaySurface(null)
+                            remoteSurface = null
+                            return true
+                        }
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                    }
                 }
             },
             modifier = Modifier.fillMaxSize()
@@ -98,27 +106,34 @@ fun VideoCallScreen(
         ) {
             Surface(
                 modifier = Modifier
-                    .width(110.dp)
-                    .height(150.dp)
+                    .width(115.dp)
+                    .height(155.dp)
                     .padding(top = 40.dp)
                     .shadow(12.dp, RoundedCornerShape(16.dp)),
                 shape = RoundedCornerShape(16.dp),
-                color = Color.DarkGray,
+                color = Color(0xFF1E1E1E),
                 border = BorderStroke(1.5.dp, ProTheme.Emerald)
             ) {
                 AndroidView(
                     factory = { context ->
-                        SurfaceView(context).apply {
-                            setZOrderMediaOverlay(true)
-                            holder.addCallback(object : SurfaceHolder.Callback {
-                                override fun surfaceCreated(holder: SurfaceHolder) {
-                                    localSurfaceHolder = holder
+                        TextureView(context).apply {
+                            surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
+                                    st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
+                                    val surface = Surface(st)
+                                    localSurface = surface
+                                    videoManager.setLocalPreviewSurface(surface)
                                 }
-                                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                                override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                    localSurfaceHolder = null
+                                override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
+                                    st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
                                 }
-                            })
+                                override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                    videoManager.setLocalPreviewSurface(null)
+                                    localSurface = null
+                                    return true
+                                }
+                                override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxSize()
@@ -140,7 +155,7 @@ fun VideoCallScreen(
             ) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = ProTheme.SurfaceCard.copy(alpha = 0.85f),
+                    color = ProTheme.SurfaceCard.copy(alpha = 0.88f),
                     border = BorderStroke(1.dp, ProTheme.BorderGlow)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -153,7 +168,7 @@ fun VideoCallScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "AES-256 CTR VIDEO",
+                                text = "AES-256 CTR 640x480",
                                 color = ProTheme.Emerald,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
@@ -176,7 +191,7 @@ fun VideoCallScreen(
                             fontSize = 14.sp
                         )
                         Text(
-                            text = "$statusText • < 25ms P2P",
+                            text = "$statusText • < 30ms P2P",
                             color = ProTheme.TextSecondary,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace

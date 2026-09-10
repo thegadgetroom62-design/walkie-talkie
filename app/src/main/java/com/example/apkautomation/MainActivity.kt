@@ -173,7 +173,7 @@ fun WalkieTalkieApp(
     var hasPermissions by remember { mutableStateOf(checkPermissions()) }
     var activeNavTab by remember { mutableStateOf(NavDestination.COMMS) }
     var commsTransport by remember { mutableStateOf(CommsTransport.BLUETOOTH) }
-    var isVideoCallActive by remember { mutableStateOf(false) }
+    val isVideoCallActive by wifiManager.isVideoCallActive.collectAsState()
     var isMicMuted by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -350,9 +350,8 @@ fun WalkieTalkieApp(
                                     }
                                 },
                                 onEndCall = {
-                                    isVideoCallActive = false
+                                    wifiManager.requestEndVideoCall()
                                     videoManager.stopVideoCall()
-                                    wifiManager.stopFullDuplexVoice()
                                 }
                             )
                         } else if (isBtConnected) {
@@ -394,11 +393,10 @@ fun WalkieTalkieApp(
                                 onToggleSpeaker = { wifiManager.toggleSpeakerphone() },
                                 onOpenSecuritySettings = { activeNavTab = NavDestination.VAULT },
                                 onStartVideoCall = {
-                                    isVideoCallActive = true
-                                    wifiManager.startFullDuplexVoice()
+                                    wifiManager.requestStartVideoCall()
                                 },
                                 onDisconnect = {
-                                    isVideoCallActive = false
+                                    wifiManager.requestEndVideoCall()
                                     videoManager.stopVideoCall()
                                     wifiManager.disconnect()
                                 }

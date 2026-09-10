@@ -1,8 +1,7 @@
-package com.example.apkautomation.video
+﻿package com.example.apkautomation.video
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -10,7 +9,6 @@ import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
-import android.util.Size
 import android.view.Surface
 import com.example.apkautomation.crypto.VoiceEncryptor
 import kotlinx.coroutines.*
@@ -24,11 +22,10 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.nio.ByteBuffer
 
 /**
  * Off-Grid Hardware-Accelerated Video Calling Manager
- * Streams 480x640 @ 30fps H.264 encrypted with AES-256 CTR over Wi-Fi Direct (Port 8890)
+ * Streams 640x480 @ 30fps H.264 encrypted with AES-256 CTR over Wi-Fi Direct (Port 8890)
  */
 class WifiVideoManager(
     private val context: Context,
@@ -37,8 +34,8 @@ class WifiVideoManager(
     companion object {
         private const val TAG = "WifiVideoManager"
         const val VIDEO_PORT = 8890
-        const val VIDEO_WIDTH = 480
-        const val VIDEO_HEIGHT = 640
+        const val VIDEO_WIDTH = 640
+        const val VIDEO_HEIGHT = 480
         private const val FRAME_RATE = 30
         private const val BIT_RATE = 1_200_000 // 1.2 Mbps
         private const val I_FRAME_INTERVAL = 1 // 1 sec keyframe interval
@@ -87,6 +84,24 @@ class WifiVideoManager(
         voiceEncryptor = VoiceEncryptor(activePin)
     }
 
+    fun setLocalPreviewSurface(surface: Surface?) {
+        localPreviewSurface = surface
+        if (cameraDevice != null && cameraHandler != null) {
+            cameraHandler?.post {
+                createCameraCaptureSession()
+            }
+        }
+    }
+
+    fun setRemoteDisplaySurface(surface: Surface?) {
+        remoteDisplaySurface = surface
+        if (surface != null && surface.isValid) {
+            initDecoder(surface)
+        } else {
+            stopDecoder()
+        }
+    }
+
     fun startVideoCall(
         peerIp: InetAddress?,
         isHost: Boolean,
@@ -105,7 +120,9 @@ class WifiVideoManager(
         startCameraBackgroundThread()
 
         // 1. Initialize Decoder if remote surface available
-        remoteSurface?.let { initDecoder(it) }
+        remoteSurface?.let {
+            if (it.isValid) initDecoder(it)
+        }
 
         // 2. Initialize Encoder & Camera
         initEncoder()
@@ -144,6 +161,7 @@ class WifiVideoManager(
     }
 
     private fun startCameraBackgroundThread() {
+        if (cameraThread != null) return
         cameraThread = HandlerThread("CameraBackground").also { it.start() }
         cameraHandler = Handler(cameraThread?.looper!!)
     }
@@ -159,6 +177,7 @@ class WifiVideoManager(
 
     private fun initEncoder() {
         try {
+            stopEncoder()
             val format = MediaFormat.createVideoFormat(MIME_TYPE, VIDEO_WIDTH, VIDEO_HEIGHT).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                 setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
@@ -183,16 +202,21 @@ class WifiVideoManager(
             videoEncoder?.release()
         } catch (_: Exception) {}
         videoEncoder = null
+        try {
+            encoderInputSurface?.release()
+        } catch (_: Exception) {}
         encoderInputSurface = null
     }
 
     private fun initDecoder(surface: Surface) {
         try {
+            stopDecoder()
             val format = MediaFormat.createVideoFormat(MIME_TYPE, VIDEO_WIDTH, VIDEO_HEIGHT)
             videoDecoder = MediaCodec.createDecoderByType(MIME_TYPE).apply {
                 configure(format, surface, null, 0)
                 start()
             }
+            Log.d(TAG, "Decoder successfully initialized with surface")
         } catch (e: Exception) {
             Log.e(TAG, "Decoder initialization failed", e)
             _statusText.value = "Decoder Error: ${e.message}"
@@ -247,11 +271,13 @@ class WifiVideoManager(
                         camera.close()
                         cameraDevice = null
                         Log.e(TAG, "Camera error: $error")
+                        _statusText.value = "Camera Open Error: $error"
                     }
                 }, handler)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start camera", e)
+            _statusText.value = "Camera Open Exception"
         }
     }
 
@@ -261,16 +287,30 @@ class WifiVideoManager(
         val encoderSurface = encoderInputSurface
 
         val surfaces = mutableListOf<Surface>()
-        encoderSurface?.let { surfaces.add(it) }
-        localPreviewSurface?.let { surfaces.add(it) }
+        if (encoderSurface != null && encoderSurface.isValid) {
+            surfaces.add(encoderSurface)
+        }
+        val preview = localPreviewSurface
+        if (preview != null && preview.isValid) {
+            surfaces.add(preview)
+        }
 
-        if (surfaces.isEmpty()) return
+        if (surfaces.isEmpty()) {
+            _statusText.value = "Waiting for Camera Surfaces..."
+            return
+        }
 
         try {
+            captureSession?.close()
+            captureSession = null
+
             val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-            for (surface in surfaces) {
-                requestBuilder.addTarget(surface)
+            for (s in surfaces) {
+                requestBuilder.addTarget(s)
             }
+
+            requestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            requestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
 
             // Apply torch if back camera and enabled
             if (!_isCameraFacingFront.value && _isTorchEnabled.value) {
@@ -282,19 +322,22 @@ class WifiVideoManager(
                     if (cameraDevice == null) return
                     captureSession = session
                     try {
-                        requestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
                         session.setRepeatingRequest(requestBuilder.build(), null, handler)
+                        _statusText.value = "Camera Live (640x480)"
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to start repeating request", e)
+                        _statusText.value = "Camera Stream Error"
                     }
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
                     Log.e(TAG, "Camera session configuration failed")
+                    _statusText.value = "Camera Config Failed"
                 }
             }, handler)
         } catch (e: Exception) {
             Log.e(TAG, "createCameraCaptureSession failed", e)
+            _statusText.value = "Camera Session Error"
         }
     }
 
@@ -329,8 +372,8 @@ class WifiVideoManager(
 
         try {
             val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-            encoderInputSurface?.let { requestBuilder.addTarget(it) }
-            localPreviewSurface?.let { requestBuilder.addTarget(it) }
+            encoderInputSurface?.let { if (it.isValid) requestBuilder.addTarget(it) }
+            localPreviewSurface?.let { if (it.isValid) requestBuilder.addTarget(it) }
 
             if (newTorch) {
                 requestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
@@ -348,6 +391,7 @@ class WifiVideoManager(
         scope.launch(Dispatchers.IO) {
             try {
                 if (isGroupOwner) {
+                    _statusText.value = "Awaiting Peer Video Connection..."
                     videoServerSocket?.close()
                     videoServerSocket = ServerSocket(VIDEO_PORT).apply {
                         reuseAddress = true
@@ -355,32 +399,38 @@ class WifiVideoManager(
                     val client = videoServerSocket?.accept()
                     videoSocket = client
                 } else {
-                    val peer = targetPeerAddress
-                    if (peer != null) {
-                        for (attempt in 1..25) {
-                            if (!_isVideoActive.value) break
+                    _statusText.value = "Connecting to Video Host..."
+                    for (attempt in 1..40) {
+                        if (!_isVideoActive.value) break
+                        val peer = targetPeerAddress ?: try {
+                            InetAddress.getByName("192.168.49.1")
+                        } catch (_: Exception) { null }
+
+                        if (peer != null) {
                             try {
                                 val s = Socket()
                                 s.connect(InetSocketAddress(peer, VIDEO_PORT), 1500)
                                 videoSocket = s
                                 break
                             } catch (_: Exception) {
-                                delay(600)
+                                delay(500)
                             }
+                        } else {
+                            delay(500)
                         }
                     }
                 }
 
                 val socket = videoSocket
                 if (socket != null && socket.isConnected) {
-                    _statusText.value = "Direct HD Video Active"
+                    _statusText.value = "P2P Video Channel Active"
                     startTransmissionPipelines(socket)
                 } else {
-                    _statusText.value = "Video Link Failed to Connect"
+                    _statusText.value = "Video Link Failed"
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "startVideoSocket error", e)
-                _statusText.value = "Video Socket Error"
+                _statusText.value = "Video Socket: ${e.message}"
             }
         }
     }
@@ -408,15 +458,17 @@ class WifiVideoManager(
                             val rawData = ByteArray(bufferInfo.size)
                             outputBuffer.get(rawData)
 
-                            val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                            val flags = bufferInfo.flags
+                            val pts = bufferInfo.presentationTimeUs
 
                             // Encrypt with AES-256 CTR using Vault PIN
                             val encryptedData = voiceEncryptor.encrypt(rawData)
 
-                            // Frame wire format: [4-byte length][1-byte flags][payload]
+                            // Frame wire format: [4-byte length][4-byte flags][8-byte pts][payload]
                             synchronized(outStream) {
                                 outStream.writeInt(encryptedData.size)
-                                outStream.writeByte(if (isKeyFrame) 1 else 0)
+                                outStream.writeInt(flags)
+                                outStream.writeLong(pts)
                                 outStream.write(encryptedData)
                                 outStream.flush()
                             }
@@ -446,15 +498,16 @@ class WifiVideoManager(
             while (isActive && _isVideoActive.value && !socket.isClosed) {
                 try {
                     val frameLength = inStream.readInt()
-                    if (frameLength <= 0 || frameLength > 500_000) continue
+                    if (frameLength <= 0 || frameLength > 2_000_000) continue
 
-                    val isKeyFrame = inStream.readByte() == 1.toByte()
+                    val flags = inStream.readInt()
+                    val pts = inStream.readLong()
 
                     val encryptedFrame = ByteArray(frameLength)
                     inStream.readFully(encryptedFrame)
 
-                    // Decrypt with AES-256 CTR using Vault PIN
-                    val decryptedFrame = voiceEncryptor.decrypt(encryptedFrame) ?: continue
+                    // Decrypt with AES-256 CTR using Vault PIN (or fallback to avoid silent black screen)
+                    val decryptedFrame = voiceEncryptor.decrypt(encryptedFrame) ?: encryptedFrame
 
                     // Feed decrypted NAL into hardware decoder
                     val inIndex = decoder.dequeueInputBuffer(10000)
@@ -466,13 +519,13 @@ class WifiVideoManager(
                             inIndex,
                             0,
                             decryptedFrame.size,
-                            System.nanoTime() / 1000,
-                            if (isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                            pts,
+                            flags
                         )
                     }
 
                     // Release decoded frame to surface for rendering
-                    var outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
+                    var outIndex = decoder.dequeueOutputBuffer(bufferInfo, 5000)
                     while (outIndex >= 0) {
                         decoder.releaseOutputBuffer(outIndex, true) // true renders to surface!
                         outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
