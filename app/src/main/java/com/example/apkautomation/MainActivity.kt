@@ -102,15 +102,19 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // Enable screen-on and show-when-locked so walkie-talkie is accessible when phone is locked
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-            )
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                )
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Lockscreen window flags not supported or restricted", e)
         }
 
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -145,10 +149,14 @@ class MainActivity : ComponentActivity() {
                 wifiState == ConnectionState.CONNECTED ||
                 btState == ConnectionState.CONNECTED
             }.collect { isCallActive ->
-                if (isCallActive) {
-                    WalkieTalkieService.start(this@MainActivity)
-                } else {
-                    WalkieTalkieService.stop(this@MainActivity)
+                try {
+                    if (isCallActive) {
+                        WalkieTalkieService.start(this@MainActivity)
+                    } else {
+                        WalkieTalkieService.stop(this@MainActivity)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Error updating WalkieTalkieService state", e)
                 }
             }
         }

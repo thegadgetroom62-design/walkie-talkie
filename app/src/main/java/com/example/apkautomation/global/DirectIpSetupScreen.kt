@@ -38,6 +38,8 @@ fun DirectIpSetupScreen(
     val connectionState by directIpManager.connectionState.collectAsState()
     val roomMode by directIpManager.roomMode.collectAsState()
     val activeRoomCode by directIpManager.activeRoomCode.collectAsState()
+    val lastRoomCode by directIpManager.lastRoomCode.collectAsState()
+    val onlinePeers by directIpManager.onlinePeers.collectAsState()
     val localIp by directIpManager.localIp.collectAsState()
     val publicAddress by directIpManager.publicAddress.collectAsState()
     val statusMessage by directIpManager.statusMessage.collectAsState()
@@ -75,24 +77,171 @@ fun DirectIpSetupScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Walkie-Talkie Pro v2.0.0",
+                        text = "Walkie-Talkie Pro v2.2.1",
                         color = ProTheme.Emerald,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
                 Text(
-                    text = "Zero-Config Room P2P",
+                    text = "Zero-Config Direct Link Active",
                     color = ProTheme.TextSecondary,
                     fontSize = 11.sp
                 )
             }
         }
 
-        // 1. HERO CARD: 4-DIGIT ROOM CODE (RECOMMENDED)
+        // 1. QUICK 1-TAP CHANNELS (FASTEST & EASIEST)
         BentoCard(
-            title = "AUTOMATIC 4-DIGIT ROOM CALLING",
-            subtitle = "Zero configuration • Guaranteed to connect across 100+ km on 4G/5G or Wi-Fi"
+            title = "📻 TACTICAL PRESET CHANNELS",
+            subtitle = "Tap the same channel on both phones to connect immediately — zero typing!"
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    for (ch in 1..4) {
+                        val chCode = (1000 + ch).toString()
+                        val isCurrent = (activeRoomCode == chCode)
+                        Button(
+                            onClick = { directIpManager.joinChannel(ch) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isCurrent) ProTheme.Emerald else ProTheme.SurfaceCardElevated,
+                                contentColor = if (isCurrent) Color.Black else Color.White
+                            ),
+                            border = BorderStroke(1.dp, if (isCurrent) ProTheme.Emerald else ProTheme.BorderSubtle),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                text = "CH $ch",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+
+                if (lastRoomCode != null && lastRoomCode != activeRoomCode) {
+                    Surface(
+                        onClick = { directIpManager.reconnectLastRoom() },
+                        shape = RoundedCornerShape(10.dp),
+                        color = ProTheme.SkyBlue.copy(alpha = 0.15f),
+                        border = BorderStroke(1.dp, ProTheme.SkyBlue),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, tint = ProTheme.SkyBlue, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "⚡ Reconnect to Last Room ($lastRoomCode)",
+                                color = ProTheme.SkyBlue,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. LIVE ONLINE PHONES (DISCOVERY & 1-TAP CONNECT)
+        BentoCard(
+            title = "🟢 ONLINE PHONES (AUTO-DISCOVERY)",
+            subtitle = "Phones detected on Global Call link"
+        ) {
+            if (onlinePeers.isEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = ProTheme.Emerald
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Searching for other phones online... Or tap a Channel above.",
+                        color = ProTheme.TextSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    onlinePeers.forEach { peer ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = ProTheme.SurfaceCardElevated,
+                            border = BorderStroke(1.dp, ProTheme.BorderSubtle),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(ProTheme.Emerald)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Column {
+                                        Text(
+                                            text = peer.name,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            fontSize = 13.sp
+                                        )
+                                        Text(
+                                            text = "Online now",
+                                            color = ProTheme.Emerald,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
+
+                                Button(
+                                    onClick = { directIpManager.callPeer(peer) },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = ProTheme.Emerald,
+                                        contentColor = Color.Black
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.PhoneInTalk, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("CALL", fontWeight = FontWeight.Black, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. MANUAL 4-DIGIT ROOM CODE (OR HOST CUSTOM ROOM)
+        BentoCard(
+            title = "CUSTOM 4-DIGIT ROOM CALLING",
+            subtitle = "Host a private custom room or enter friend's 4-digit code"
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 // ACTIVE ROOM BANNER (If host has created a room)

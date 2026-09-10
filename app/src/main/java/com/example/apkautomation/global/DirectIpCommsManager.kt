@@ -8,7 +8,9 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -24,11 +26,18 @@ import java.nio.charset.StandardCharsets
 import java.util.Collections
 import kotlin.random.Random
 
+data class LobbyPeer(
+    val id: Int,
+    val name: String,
+    val lastSeen: Long = System.currentTimeMillis()
+)
+
 /**
  * Direct-IP Global P2P & 4-Digit Room Code Signaling Engine
  * Supports:
  * 1. Automatic 4-Digit Room Code P2P with Coordinated Hole Punching & Encrypted Relay Fallback.
  * 2. Standalone Serverless Direct-IP dialing (with STUN NAT Traversal & LAN fallback).
+ * 3. 1-Tap Preset Channels & Live Online Lobby Calling.
  */
 class DirectIpCommsManager(
     private val context: Context,
@@ -50,6 +59,7 @@ class DirectIpCommsManager(
     }
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val prefs = context.getSharedPreferences("walkie_prefs", Context.MODE_PRIVATE)
     private val localSenderId: Int = Random.nextInt(100000, 999999)
 
     private val _connectionState = MutableStateFlow(DirectIpState.IDLE)
@@ -60,6 +70,12 @@ class DirectIpCommsManager(
 
     private val _activeRoomCode = MutableStateFlow<String?>(null)
     val activeRoomCode = _activeRoomCode.asStateFlow()
+
+    private val _lastRoomCode = MutableStateFlow<String?>(prefs.getString("last_room_code", null))
+    val lastRoomCode = _lastRoomCode.asStateFlow()
+
+    private val _onlinePeers = MutableStateFlow<List<LobbyPeer>>(emptyList())
+    val onlinePeers = _onlinePeers.asStateFlow()
 
     private val _localIp = MutableStateFlow(detectLocalIp())
     val localIp = _localIp.asStateFlow()
@@ -103,6 +119,11 @@ class DirectIpCommsManager(
     private var heartbeatJob: Job? = null
     private var stunJob: Job? = null
     private var fallbackTimerJob: Job? = null
+    private var joinAnnounceJob: Job? = null
+    private var lobbyJob: Job? = null
+
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     private var voiceEncryptor: VoiceEncryptor = VoiceEncryptor("1234")
     private var lastPingSentTime = 0L
@@ -116,6 +137,8 @@ class DirectIpCommsManager(
         signalingEngine.onMessageListener = { topic, payload ->
             handleSignalingMessage(topic, payload)
         }
+
+        startLobbyDiscovery()
     }
 
     fun updateSecurityPin(pin: String) {
@@ -169,12 +192,72 @@ class DirectIpCommsManager(
     }
 
     // ==========================================
+    // ONLINE LOBBY AUTO-DISCOVERY & 1-TAP CALL
+    // ==========================================
+
+    fun startLobbyDiscovery() {
+        lobbyJob?.cancel()
+        lobbyJob = scope.launch(Dispatchers.IO) {
+            try {
+                if (!signalingEngine.isConnected) {
+                    signalingEngine.connect(scope)
+                }
+                signalingEngine.subscribe("walkie_p2p/lobby/#")
+            } catch (e: Exception) {
+                Log.w(TAG, "Lobby connect initial warning: ${e.message}")
+            }
+
+            while (isActive) {
+                try {
+                    if (!signalingEngine.isConnected) {
+                        signalingEngine.connect(scope)
+                        signalingEngine.subscribe("walkie_p2p/lobby/#")
+                    }
+
+                    val devName = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}".trim()
+                    val pingMsg = "LOBBY_PING|$localSenderId|$devName"
+                    signalingEngine.publish("walkie_p2p/lobby/ping", pingMsg.toByteArray(StandardCharsets.UTF_8))
+
+                    // Clean up stale peers older than 10 seconds
+                    val now = System.currentTimeMillis()
+                    _onlinePeers.value = _onlinePeers.value.filter { (now - it.lastSeen) < 10000 }
+                } catch (_: Exception) {}
+                delay(3500)
+            }
+        }
+    }
+
+    fun callPeer(peer: LobbyPeer) {
+        val code = Random.nextInt(1000, 9999).toString()
+        scope.launch(Dispatchers.IO) {
+            val devName = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}".trim()
+            val msg = "LOBBY_CALL|${peer.id}|$localSenderId|$code|$devName"
+            signalingEngine.publish("walkie_p2p/lobby/call", msg.toByteArray(StandardCharsets.UTF_8))
+            withContext(Dispatchers.Main) {
+                joinRoom(code)
+            }
+        }
+    }
+
+    fun joinChannel(channelNumber: Int) {
+        val channelCode = (1000 + channelNumber).toString()
+        joinRoom(channelCode)
+    }
+
+    fun reconnectLastRoom() {
+        val code = _lastRoomCode.value ?: return
+        joinRoom(code)
+    }
+
+    // ==========================================
     // 4-DIGIT ROOM CODE SIGNALING & CALLING
     // ==========================================
 
     fun createRoom() {
-        disconnect()
+        disconnectInternal()
         val code = Random.nextInt(1000, 9999).toString()
+        prefs.edit().putString("last_room_code", code).apply()
+        _lastRoomCode.value = code
         _activeRoomCode.value = code
         _roomMode.value = RoomMode.CREATING
         _statusMessage.value = "Creating Room $code..."
@@ -208,7 +291,10 @@ class DirectIpCommsManager(
             return
         }
 
-        disconnect()
+        prefs.edit().putString("last_room_code", code).apply()
+        _lastRoomCode.value = code
+
+        disconnectInternal()
         _activeRoomCode.value = code
         _roomMode.value = RoomMode.CONNECTING
         _statusMessage.value = "Joining Room $code..."
@@ -224,9 +310,16 @@ class DirectIpCommsManager(
                 signalingEngine.subscribe("walkie_p2p/$code/#")
                 _statusMessage.value = "Joined Room $code • Punching Firewalls..."
 
-                // Publish JOIN announcement
-                val msg = "JOIN_REQ|$localSenderId|$myPubIp|$myPubPort|${_localIp.value}"
-                signalingEngine.publish("walkie_p2p/$code/signal", msg.toByteArray(StandardCharsets.UTF_8))
+                // Continuous announcement until connected so both users connect seamlessly
+                joinAnnounceJob?.cancel()
+                joinAnnounceJob = scope.launch(Dispatchers.IO) {
+                    val msg = "JOIN_REQ|$localSenderId|$myPubIp|$myPubPort|${_localIp.value}"
+                    for (attempt in 1..25) {
+                        if (!isActive || _connectionState.value == DirectIpState.CONNECTED) break
+                        signalingEngine.publish("walkie_p2p/$code/signal", msg.toByteArray(StandardCharsets.UTF_8))
+                        delay(2500)
+                    }
+                }
 
                 // Schedule relay fallback if UDP is blocked by strict carrier CGNAT
                 scheduleFallbackTimer(code)
@@ -238,6 +331,34 @@ class DirectIpCommsManager(
     }
 
     private fun handleSignalingMessage(topic: String, payload: ByteArray) {
+        // Handle Global Lobby
+        if (topic.startsWith("walkie_p2p/lobby")) {
+            val text = String(payload, StandardCharsets.UTF_8)
+            val parts = text.split("|")
+            if (parts.size >= 3 && parts[0] == "LOBBY_PING") {
+                val peerId = parts[1].toIntOrNull() ?: return
+                if (peerId != localSenderId) {
+                    val name = parts[2].ifBlank { "Nearby Phone" }
+                    val current = _onlinePeers.value.toMutableList()
+                    current.removeAll { it.id == peerId }
+                    current.add(0, LobbyPeer(id = peerId, name = name, lastSeen = System.currentTimeMillis()))
+                    _onlinePeers.value = current
+                }
+            } else if (parts.size >= 4 && parts[0] == "LOBBY_CALL") {
+                val targetId = parts[1].toIntOrNull() ?: return
+                if (targetId == localSenderId) {
+                    val roomCode = parts[3]
+                    val callerName = if (parts.size > 4) parts[4] else "Direct Call"
+                    Log.i(TAG, "Incoming direct call from $callerName, joining room $roomCode")
+                    triggerHapticFeedback(80)
+                    scope.launch(Dispatchers.Main) {
+                        joinRoom(roomCode)
+                    }
+                }
+            }
+            return
+        }
+
         val room = _activeRoomCode.value ?: return
 
         if (topic.endsWith("/audio")) {
@@ -321,6 +442,7 @@ class DirectIpCommsManager(
                 _roomMode.value = RoomMode.ENCRYPTED_RELAY
                 _connectionState.value = DirectIpState.CONNECTED
                 _statusMessage.value = "Connected (Encrypted Cloud Relay • Zero-Drop)"
+                acquireWakeLocks()
             }
         }
     }
@@ -330,7 +452,7 @@ class DirectIpCommsManager(
     // ==========================================
 
     fun startHosting() {
-        disconnect()
+        disconnectInternal()
         refreshLocalIp()
         _connectionState.value = DirectIpState.LISTENING
         _statusMessage.value = "Listening on port $DEFAULT_PORT (Share your Global Address)"
@@ -351,7 +473,7 @@ class DirectIpCommsManager(
         val targetIp = parts[0].trim()
         val port = if (parts.size > 1) parts[1].trim().toIntOrNull() ?: defaultPortFallback else defaultPortFallback
 
-        disconnect()
+        disconnectInternal()
         refreshLocalIp()
         _connectionState.value = DirectIpState.CONNECTING
         _statusMessage.value = "Punching NAT Hole to $targetIp:$port..."
@@ -660,25 +782,62 @@ class DirectIpCommsManager(
 
             // Default to 100% maximum volume for walkie-talkie loudspeaker
             if (enabled) {
-                val maxCallVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
-                audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxCallVol, 0)
-                val maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVol, 0)
+                try {
+                    val maxCallVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+                    audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxCallVol, 0)
+                    val maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVol, 0)
+                } catch (se: Exception) {
+                    Log.w(TAG, "Audio volume override restricted by system (e.g. DND)", se)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Speakerphone routing error", e)
         }
     }
 
-    fun disconnect() {
-        val peer = targetInetAddress
-        if (peer != null) {
-            scope.launch(Dispatchers.IO) {
-                sendPacket(PKT_DISCONNECT, peer, targetPort, ByteArray(0))
+    @SuppressLint("WakelockTimeout")
+    private fun acquireWakeLocks() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "WalkieTalkiePro::DirectIpWakeLock"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire(12 * 60 * 60 * 1000L)
+                }
             }
+            if (wifiLock == null) {
+                val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                wifiLock = wifiManager.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "WalkieTalkiePro::DirectIpWifiLock"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+            Log.d(TAG, "DirectIp WakeLock and WifiLock acquired for call")
+        } catch (e: Exception) {
+            Log.w(TAG, "WakeLock acquisition warning", e)
         }
+    }
 
-        signalingEngine.disconnect()
+    private fun releaseWakeLocks() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+            wakeLock = null
+            wifiLock?.let { if (it.isHeld) it.release() }
+            wifiLock = null
+        } catch (_: Exception) {}
+    }
+
+    fun disconnectInternal() {
+        joinAnnounceJob?.cancel()
+        joinAnnounceJob = null
+
         fallbackTimerJob?.cancel()
         fallbackTimerJob = null
 
@@ -690,6 +849,8 @@ class DirectIpCommsManager(
 
         transmitJob?.cancel()
         transmitJob = null
+
+        releaseWakeLocks()
 
         try {
             audioRecord?.stop()
@@ -710,6 +871,17 @@ class DirectIpCommsManager(
         _isReceiving.value = false
         _isTransmitting.value = false
         _latencyMs.value = 0
+    }
+
+    fun disconnect() {
+        val peer = targetInetAddress
+        if (peer != null) {
+            scope.launch(Dispatchers.IO) {
+                sendPacket(PKT_DISCONNECT, peer, targetPort, ByteArray(0))
+            }
+        }
+
+        disconnectInternal()
         _statusMessage.value = "Link Disconnected"
     }
 

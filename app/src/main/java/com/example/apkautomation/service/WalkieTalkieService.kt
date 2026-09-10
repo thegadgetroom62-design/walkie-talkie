@@ -49,11 +49,9 @@ class WalkieTalkieService : Service() {
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, WalkieTalkieService::class.java).apply {
-                action = ACTION_STOP
-            }
             try {
-                context.startService(intent)
+                val intent = Intent(context, WalkieTalkieService::class.java)
+                context.stopService(intent)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to stop foreground service", e)
             }
@@ -86,12 +84,7 @@ class WalkieTalkieService : Service() {
         val notification = buildNotification(status)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                }
-                startForeground(NOTIFICATION_ID, notification, fgsType)
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
