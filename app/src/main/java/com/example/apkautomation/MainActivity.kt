@@ -437,12 +437,12 @@ fun WalkieTalkieApp(
                                 onDisconnect = { directIpManager.disconnect() }
                             )
                         } else {
-                            // Scrollable Setup Screen so nothing is EVER cut off or hidden behind the bottom dock
+                            // Scrollable Setup Screen with bounded constraints
                             Column(
                                 modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .verticalScroll(rememberScrollState()),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 // Sleek segmented pill switcher
@@ -643,11 +643,11 @@ fun WifiDirectSetupScreen(
             )
         }
     } else {
-        LazyColumn(
+        Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(discoveredPeers) { device ->
+            discoveredPeers.forEach { device ->
                 BentoCard(
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -863,11 +863,11 @@ fun SetupScreen(
                 )
             }
         } else {
-            LazyColumn(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(bondedDevices) { device ->
+                bondedDevices.forEach { device ->
                     BentoCard(
                         modifier = Modifier.fillMaxWidth()
                     ) {

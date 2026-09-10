@@ -70,7 +70,7 @@ fun DirectIpSetupScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Walkie-Talkie Pro v1.9.1",
+                        text = "Walkie-Talkie Pro v1.9.2",
                         color = ProTheme.Emerald,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold

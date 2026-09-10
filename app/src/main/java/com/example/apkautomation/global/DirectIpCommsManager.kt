@@ -114,13 +114,20 @@ class DirectIpCommsManager(
     fun resolvePublicAddress() {
         stunJob?.cancel()
         stunJob = scope.launch(Dispatchers.IO) {
-            _natStatus.value = "Contacting Google STUN..."
-            val result = StunClient.resolvePublicAddress(udpSocket)
-            if (result.isSuccessful) {
-                _publicAddress.value = result.addressString
-                _natStatus.value = "NAT Traversal Ready (${result.serverUsed})"
-                Log.i(TAG, "STUN mapped: ${result.addressString}")
-            } else {
+            try {
+                _natStatus.value = "Contacting Google STUN..."
+                val result = StunClient.resolvePublicAddress(udpSocket)
+                if (result.isSuccessful) {
+                    _publicAddress.value = result.addressString
+                    _natStatus.value = "NAT Traversal Ready (${result.serverUsed})"
+                    Log.i(TAG, "STUN mapped: ${result.addressString}")
+                } else {
+                    val fallback = "${_localIp.value}:$DEFAULT_PORT"
+                    _publicAddress.value = fallback
+                    _natStatus.value = "Local Wi-Fi Only"
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "STUN lookup caught exception: ${e.message}")
                 val fallback = "${_localIp.value}:$DEFAULT_PORT"
                 _publicAddress.value = fallback
                 _natStatus.value = "Local Wi-Fi Only"
