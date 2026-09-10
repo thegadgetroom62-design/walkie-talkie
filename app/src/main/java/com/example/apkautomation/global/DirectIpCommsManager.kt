@@ -2,6 +2,7 @@ package com.example.apkautomation.global
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -425,6 +426,7 @@ class DirectIpCommsManager(
                 .build()
 
             audioTrack?.play()
+            applySpeakerphoneRouting(_isSpeakerphone.value)
         } catch (e: Exception) {
             Log.e(TAG, "AudioTrack init error", e)
         }
@@ -635,9 +637,29 @@ class DirectIpCommsManager(
     fun toggleSpeakerphone() {
         val newSpeaker = !_isSpeakerphone.value
         _isSpeakerphone.value = newSpeaker
+        applySpeakerphoneRouting(newSpeaker)
+    }
+
+    private fun applySpeakerphoneRouting(enabled: Boolean) {
         try {
-            audioManager.isSpeakerphoneOn = newSpeaker
-        } catch (_: Exception) {}
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (enabled) {
+                    val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (speaker != null) {
+                        audioManager.setCommunicationDevice(speaker)
+                    }
+                } else {
+                    audioManager.clearCommunicationDevice()
+                }
+            }
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = enabled
+        } catch (e: Exception) {
+            Log.e(TAG, "Speakerphone routing error", e)
+        }
     }
 
     fun disconnect() {

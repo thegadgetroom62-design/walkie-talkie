@@ -1,5 +1,7 @@
-﻿package com.example.apkautomation.video
+package com.example.apkautomation.video
 
+import android.graphics.Matrix
+import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
@@ -78,12 +80,14 @@ fun VideoCallScreen(
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                             st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
+                            applyPortraitTransform(this@apply, width, height, isMirror = false)
                             val surface = Surface(st)
                             remoteSurface = surface
                             videoManager.setRemoteDisplaySurface(surface)
                         }
                         override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
                             st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
+                            applyPortraitTransform(this@apply, width, height, isMirror = false)
                         }
                         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                             videoManager.setRemoteDisplaySurface(null)
@@ -120,12 +124,14 @@ fun VideoCallScreen(
                             surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                                 override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
                                     st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
+                                    applyPortraitTransform(this@apply, width, height, isMirror = isFacingFront)
                                     val surface = Surface(st)
                                     localSurface = surface
                                     videoManager.setLocalPreviewSurface(surface)
                                 }
                                 override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
                                     st.setDefaultBufferSize(WifiVideoManager.VIDEO_WIDTH, WifiVideoManager.VIDEO_HEIGHT)
+                                    applyPortraitTransform(this@apply, width, height, isMirror = isFacingFront)
                                 }
                                 override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                                     videoManager.setLocalPreviewSurface(null)
@@ -301,3 +307,35 @@ fun VideoCallScreen(
         }
     }
 }
+
+/**
+ * Transforms camera and video frames to render in true upright portrait orientation
+ * (aspect-fill center crop with optional front-camera horizontal flip).
+ */
+private fun applyPortraitTransform(view: TextureView, viewWidth: Int, viewHeight: Int, isMirror: Boolean) {
+    if (viewWidth == 0 || viewHeight == 0) return
+
+    val matrix = Matrix()
+    val viewRect = RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
+    val centerX = viewRect.centerX()
+    val centerY = viewRect.centerY()
+
+    // 90-degree rotation to orient landscape buffer (640x480) into portrait screen
+    matrix.postRotate(90f, centerX, centerY)
+
+    // After 90-degree rotation, buffer dimensions are effectively swapped (480 wide, 640 high)
+    val rotatedBufWidth = WifiVideoManager.VIDEO_HEIGHT.toFloat()
+    val rotatedBufHeight = WifiVideoManager.VIDEO_WIDTH.toFloat()
+
+    // Aspect-Fill: Scale so the video fills the entire view without black bars or distortion
+    val scale = maxOf(viewWidth / rotatedBufWidth, viewHeight / rotatedBufHeight)
+    matrix.postScale(scale, scale, centerX, centerY)
+
+    // Front-camera selfie mirror
+    if (isMirror) {
+        matrix.postScale(-1f, 1f, centerX, centerY)
+    }
+
+    view.setTransform(matrix)
+}
+
