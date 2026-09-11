@@ -1,4 +1,4 @@
-﻿package com.example.apkautomation.crypto
+package com.example.apkautomation.crypto
 
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -64,6 +64,27 @@ class VoiceEncryptor(pin: String) {
 
             cipher.doFinal(encryptedPacket, offset + 16, length - 16)
         } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Encrypt a text string to Base64-encoded ciphertext with prepended IV.
+     */
+    fun encryptText(plainText: String): String {
+        val encryptedBytes = encrypt(plainText.toByteArray(Charsets.UTF_8))
+        return android.util.Base64.encodeToString(encryptedBytes, android.util.Base64.NO_WRAP)
+    }
+
+    /**
+     * Decrypt Base64-encoded ciphertext with prepended IV back to plain text.
+     */
+    fun decryptText(base64Cipher: String): String? {
+        return try {
+            val bytes = android.util.Base64.decode(base64Cipher, android.util.Base64.NO_WRAP)
+            val decryptedBytes = decrypt(bytes) ?: return null
+            String(decryptedBytes, Charsets.UTF_8)
+        } catch (_: Exception) {
             null
         }
     }

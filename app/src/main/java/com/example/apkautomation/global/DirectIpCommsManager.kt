@@ -201,6 +201,23 @@ class DirectIpCommsManager(
     private var voiceEncryptor: VoiceEncryptor = VoiceEncryptor("1234")
     private var lastPingSentTime = 0L
 
+    var chatManager: com.example.apkautomation.chat.ChatManager? = null
+
+    fun getVoiceEncryptor(): VoiceEncryptor = voiceEncryptor
+
+    fun publishChatMessage(topic: String, payload: ByteArray) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (!signalingEngine.isConnected) {
+                    signalingEngine.connect(scope)
+                }
+                signalingEngine.publish(topic, payload)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to publish chat message to $topic", e)
+            }
+        }
+    }
+
     private val signalingEngine = MqttSignalingEngine()
 
     init {
@@ -281,6 +298,8 @@ class DirectIpCommsManager(
                 }
                 signalingEngine.subscribe("walkie_p2p/lobby/#")
                 signalingEngine.subscribe("walkie_p2p/alerts/$myPhoneId/#")
+                signalingEngine.subscribe("walkie_p2p/chat/direct/$myPhoneId/#")
+                signalingEngine.subscribe("walkie_p2p/chat/room/#")
             } catch (e: Exception) {
                 Log.w(TAG, "Lobby connect initial warning: ${e.message}")
             }
@@ -291,6 +310,8 @@ class DirectIpCommsManager(
                         signalingEngine.connect(scope)
                         signalingEngine.subscribe("walkie_p2p/lobby/#")
                         signalingEngine.subscribe("walkie_p2p/alerts/$myPhoneId/#")
+                        signalingEngine.subscribe("walkie_p2p/chat/direct/$myPhoneId/#")
+                        signalingEngine.subscribe("walkie_p2p/chat/room/#")
                     }
 
                     val pingMsg = "LOBBY_PING|$myPhoneId|${_myCallSign.value}"
@@ -431,6 +452,8 @@ class DirectIpCommsManager(
             if (connected) {
                 signalingEngine.subscribe("walkie_p2p/$code/#")
                 signalingEngine.subscribe("walkie_p2p/alerts/$myPhoneId/#")
+                signalingEngine.subscribe("walkie_p2p/chat/direct/$myPhoneId/#")
+                signalingEngine.subscribe("walkie_p2p/chat/room/#")
                 _statusMessage.value = "Channel Active • Ready to Talk"
 
                 // Continuous announcement until connected so both users connect seamlessly
@@ -499,6 +522,12 @@ class DirectIpCommsManager(
                     joinRoom(roomCode)
                 }
             }
+            return
+        }
+
+        // Handle End-to-End Encrypted Chat Messages
+        if (topic.startsWith("walkie_p2p/chat/")) {
+            chatManager?.handleIncomingMessage(topic, payload)
             return
         }
 

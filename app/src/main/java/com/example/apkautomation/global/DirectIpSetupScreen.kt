@@ -32,7 +32,8 @@ import com.example.apkautomation.ui.ProTheme
 
 @Composable
 fun DirectIpSetupScreen(
-    directIpManager: DirectIpCommsManager
+    directIpManager: DirectIpCommsManager,
+    onOpenChatWithContact: ((SavedContact) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val activeRoomCode by directIpManager.activeRoomCode.collectAsState()
@@ -274,7 +275,7 @@ fun DirectIpSetupScreen(
 
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Button(
@@ -283,33 +284,52 @@ fun DirectIpSetupScreen(
                                                 Toast.makeText(context, "📢 Paging ${contact.name} to Channel 1!", Toast.LENGTH_SHORT).show()
                                             },
                                             modifier = Modifier
-                                                .weight(1.35f)
-                                                .height(44.dp),
+                                                .weight(1.15f)
+                                                .height(42.dp),
                                             shape = RoundedCornerShape(8.dp),
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = Color(0xFFE65100),
                                                 contentColor = Color.White
-                                            )
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 4.dp)
                                         ) {
-                                            Icon(Icons.Default.Campaign, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("PAGE: CH 1", fontWeight = FontWeight.Black, fontSize = 11.sp)
+                                            Icon(Icons.Default.Campaign, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text("CH 1", fontWeight = FontWeight.Black, fontSize = 11.sp)
                                         }
 
                                         Button(
                                             onClick = { directIpManager.callContact(contact) },
                                             modifier = Modifier
                                                 .weight(1f)
-                                                .height(44.dp),
+                                                .height(42.dp),
                                             shape = RoundedCornerShape(8.dp),
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = ProTheme.Emerald,
                                                 contentColor = Color.Black
-                                            )
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 4.dp)
                                         ) {
-                                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(15.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text("CALL", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(13.dp))
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text("CALL", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                        }
+
+                                        Button(
+                                            onClick = { onOpenChatWithContact?.invoke(contact) },
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(42.dp),
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = Color(0xFF0284C7),
+                                                contentColor = Color.White
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 4.dp)
+                                        ) {
+                                            Icon(Icons.Default.ChatBubble, contentDescription = null, modifier = Modifier.size(13.dp))
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text("CHAT", fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                         }
 
                                         OutlinedButton(
@@ -318,14 +338,14 @@ fun DirectIpSetupScreen(
                                                 Toast.makeText(context, "🚨 Siren alarm sent to ${contact.name}!", Toast.LENGTH_SHORT).show()
                                             },
                                             modifier = Modifier
-                                                .height(44.dp)
-                                                .width(48.dp),
+                                                .height(42.dp)
+                                                .width(42.dp),
                                             shape = RoundedCornerShape(8.dp),
                                             border = BorderStroke(1.dp, Color(0xFFD32F2F)),
                                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF5252)),
                                             contentPadding = PaddingValues(0.dp)
                                         ) {
-                                            Icon(Icons.Default.NotificationsActive, contentDescription = "Ring Siren", modifier = Modifier.size(18.dp))
+                                            Icon(Icons.Default.NotificationsActive, contentDescription = "Ring Siren", modifier = Modifier.size(16.dp))
                                         }
                                     }
                                 }

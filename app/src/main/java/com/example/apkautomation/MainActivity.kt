@@ -77,10 +77,14 @@ import com.example.apkautomation.mapper.FloorPlanMapScreen
 import com.example.apkautomation.mapper.WifiMapperEngine
 import com.example.apkautomation.radar.RadarScreen
 import com.example.apkautomation.radar.WifiRadarEngine
+import com.example.apkautomation.chat.ChatManager
+import com.example.apkautomation.chat.ChatScreen
 import com.example.apkautomation.ui.*
 import com.example.apkautomation.video.VideoCallScreen
 import com.example.apkautomation.video.WifiVideoManager
 import com.example.apkautomation.wifi.WifiDirectVoiceManager
+import androidx.compose.material.icons.filled.ChatBubble
+import kotlinx.coroutines.flow.MutableStateFlow
 
 enum class CommsTransport(val label: String) {
     DIRECT_IP("Global Call"),
@@ -93,10 +97,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var btVoiceManager: BluetoothVoiceManager
     private lateinit var wifiVoiceManager: WifiDirectVoiceManager
     private lateinit var directIpManager: DirectIpCommsManager
+    private lateinit var chatManager: ChatManager
     private lateinit var videoManager: WifiVideoManager
     private lateinit var radarEngine: WifiRadarEngine
     private lateinit var mapperEngine: WifiMapperEngine
     private var bluetoothAdapter: BluetoothAdapter? = null
+
+    private val requestedNavTab = MutableStateFlow<NavDestination?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,6 +131,16 @@ class MainActivity : ComponentActivity() {
         wifiVoiceManager = WifiDirectVoiceManager(this, lifecycleScope)
         wifiVoiceManager.initialize()
         directIpManager = DirectIpCommsManager(this, lifecycleScope)
+        chatManager = ChatManager(
+            context = this,
+            myPhoneId = directIpManager.myPhoneId,
+            myCallSign = directIpManager.myCallSign,
+            getVoiceEncryptor = { directIpManager.getVoiceEncryptor() },
+            onPublishWireMessage = { topic, payload ->
+                directIpManager.publishChatMessage(topic, payload)
+            }
+        )
+        directIpManager.chatManager = chatManager
         videoManager = WifiVideoManager(this, lifecycleScope)
         radarEngine = WifiRadarEngine(this, lifecycleScope)
         mapperEngine = WifiMapperEngine(this, lifecycleScope)
@@ -183,6 +200,8 @@ class MainActivity : ComponentActivity() {
                         btManager = btVoiceManager,
                         wifiManager = wifiVoiceManager,
                         directIpManager = directIpManager,
+                        chatManager = chatManager,
+                        requestedNavTab = requestedNavTab,
                         videoManager = videoManager,
                         radarEngine = radarEngine,
                         mapperEngine = mapperEngine,
@@ -269,6 +288,17 @@ class MainActivity : ComponentActivity() {
         if (!autoJoinRoom.isNullOrBlank()) {
             directIpManager.joinRoom(autoJoinRoom)
         }
+        val isChat = intent?.getBooleanExtra(WalkieTalkieService.EXTRA_NAVIGATE_CHAT, false) ?: false
+        if (isChat) {
+            val targetId = intent?.getIntExtra(WalkieTalkieService.EXTRA_CHAT_TARGET_ID, 0) ?: 0
+            val roomCode = intent?.getStringExtra(WalkieTalkieService.EXTRA_CHAT_ROOM_CODE)
+            if (targetId != 0) {
+                chatManager.setActiveConversation("direct_$targetId", "Phone #$targetId")
+            } else if (!roomCode.isNullOrBlank()) {
+                chatManager.openRoomChat(roomCode, "Channel $roomCode")
+            }
+            requestedNavTab.value = NavDestination.CHAT
+        }
     }
 
     override fun onDestroy() {
@@ -312,6 +342,8 @@ fun WalkieTalkieApp(
     btManager: BluetoothVoiceManager,
     wifiManager: WifiDirectVoiceManager,
     directIpManager: DirectIpCommsManager,
+    chatManager: ChatManager,
+    requestedNavTab: MutableStateFlow<NavDestination?>,
     videoManager: WifiVideoManager,
     radarEngine: WifiRadarEngine,
     mapperEngine: WifiMapperEngine,
@@ -320,6 +352,13 @@ fun WalkieTalkieApp(
 ) {
     var hasPermissions by remember { mutableStateOf(checkPermissions()) }
     var activeNavTab by remember { mutableStateOf(NavDestination.COMMS) }
+    val navReq by requestedNavTab.collectAsState()
+    LaunchedEffect(navReq) {
+        navReq?.let {
+            activeNavTab = it
+            requestedNavTab.value = null
+        }
+    }
     var commsTransport by remember { mutableStateOf(CommsTransport.DIRECT_IP) }
     val isVideoCallActive by wifiManager.isVideoCallActive.collectAsState()
     var isMicMuted by remember { mutableStateOf(false) }
@@ -572,6 +611,11 @@ fun WalkieTalkieApp(
                                 onStopTalking = { directIpManager.stopTalking() },
                                 onToggleSpeaker = { directIpManager.toggleSpeakerphone() },
                                 onOpenSecuritySettings = { activeNavTab = NavDestination.VAULT },
+                                onOpenChat = {
+                                    val currentRoom = directIpManager.activeRoomCode.value ?: "1001"
+                                    chatManager.openRoomChat(currentRoom, callLabel)
+                                    activeNavTab = NavDestination.CHAT
+                                },
                                 onDisconnect = { directIpManager.disconnect() }
                             )
                         } else {
@@ -636,7 +680,13 @@ fun WalkieTalkieApp(
                                         WifiDirectSetupScreen(wifiManager = wifiManager)
                                     }
                                     CommsTransport.DIRECT_IP -> {
-                                        DirectIpSetupScreen(directIpManager = directIpManager)
+                                        DirectIpSetupScreen(
+                                            directIpManager = directIpManager,
+                                            onOpenChatWithContact = { contact ->
+                                                chatManager.openDirectChatWithContact(contact)
+                                                activeNavTab = NavDestination.CHAT
+                                            }
+                                        )
                                     }
                                 }
 
@@ -644,6 +694,14 @@ fun WalkieTalkieApp(
                             }
                         }
                     }
+                }
+                NavDestination.CHAT -> {
+                    val savedContacts by directIpManager.savedContacts.collectAsState()
+                    ChatScreen(
+                        chatManager = chatManager,
+                        savedContacts = savedContacts,
+                        onOpenVault = { activeNavTab = NavDestination.VAULT }
+                    )
                 }
                 NavDestination.RADAR -> {
                     RadarScreen(radarEngine = radarEngine)
@@ -1056,6 +1114,7 @@ fun ActiveCallScreen(
     onToggleSpeaker: () -> Unit,
     onOpenSecuritySettings: () -> Unit,
     onStartVideoCall: (() -> Unit)? = null,
+    onOpenChat: (() -> Unit)? = null,
     onDisconnect: () -> Unit
 ) {
     Column(
@@ -1138,6 +1197,24 @@ fun ActiveCallScreen(
                             contentDescription = "Speaker Toggle",
                             tint = if (isSpeakerphone) ProTheme.Emerald else ProTheme.TextMuted
                         )
+                    }
+
+                    if (onOpenChat != null) {
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        IconButton(
+                            onClick = onOpenChat,
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF0284C7).copy(alpha = 0.25f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ChatBubble,
+                                contentDescription = "Open Chat",
+                                tint = Color(0xFF38BDF8)
+                            )
+                        }
                     }
                 }
             }

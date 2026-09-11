@@ -49,6 +49,7 @@ object ProTheme {
 
 enum class NavDestination(val label: String, val icon: ImageVector) {
     COMMS("Comms", Icons.Default.PhoneInTalk),
+    CHAT("Chat", Icons.Default.ChatBubble),
     RADAR("Radar", Icons.Default.Sensors),
     MAPPER("Mapper", Icons.Default.Map),
     VAULT("Vault", Icons.Default.Security)

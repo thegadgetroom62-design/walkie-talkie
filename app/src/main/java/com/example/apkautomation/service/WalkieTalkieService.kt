@@ -32,8 +32,13 @@ class WalkieTalkieService : Service() {
         const val ACTION_STOP = "com.example.apkautomation.STOP_SERVICE"
         const val ALERT_CHANNEL_ID = "walkie_talkie_alert_channel"
         const val ALERT_NOTIFICATION_ID = 8822
+        const val CHAT_CHANNEL_ID = "walkie_talkie_chat_channel"
+        const val CHAT_NOTIFICATION_ID_BASE = 9900
         const val EXTRA_STATUS = "extra_status"
         const val EXTRA_AUTO_JOIN_ROOM = "extra_auto_join_room"
+        const val EXTRA_NAVIGATE_CHAT = "extra_navigate_chat"
+        const val EXTRA_CHAT_TARGET_ID = "extra_chat_target_id"
+        const val EXTRA_CHAT_ROOM_CODE = "extra_chat_room_code"
 
         fun start(context: Context, status: String = "Listening on Loudspeaker • Screen-Off Active") {
             val intent = Intent(context, WalkieTalkieService::class.java).apply {
@@ -111,6 +116,63 @@ class WalkieTalkieService : Service() {
                 notificationManager.notify(ALERT_NOTIFICATION_ID, notification)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to show wake notification", e)
+            }
+        }
+
+        fun showChatMessageNotification(
+            context: Context,
+            senderName: String,
+            senderId: Int,
+            messageText: String,
+            roomCode: String? = null
+        ) {
+            try {
+                val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val chatChannel = NotificationChannel(
+                        CHAT_CHANNEL_ID,
+                        "Encrypted Tactical Chat",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "Incoming End-to-End Encrypted tactical chat messages"
+                        enableVibration(true)
+                        vibrationPattern = longArrayOf(0, 150, 100, 200)
+                    }
+                    notificationManager.createNotificationChannel(chatChannel)
+                }
+
+                val launchIntent = Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra(EXTRA_NAVIGATE_CHAT, true)
+                    putExtra(EXTRA_CHAT_TARGET_ID, senderId)
+                    if (roomCode != null) putExtra(EXTRA_CHAT_ROOM_CODE, roomCode)
+                }
+                val pendingIntent = PendingIntent.getActivity(
+                    context,
+                    (senderId.toString() + (roomCode ?: "")).hashCode(),
+                    launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                val notifId = CHAT_NOTIFICATION_ID_BASE + (senderId % 500)
+                val notification = NotificationCompat.Builder(context, CHAT_CHANNEL_ID)
+                    .setContentTitle("💬 $senderName (Encrypted)")
+                    .setContentText(messageText)
+                    .setSmallIcon(android.R.drawable.ic_dialog_email)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                    .setAutoCancel(true)
+                    .setContentIntent(pendingIntent)
+                    .addAction(
+                        android.R.drawable.ic_menu_send,
+                        "REPLY",
+                        pendingIntent
+                    )
+                    .build()
+
+                notificationManager.notify(notifId, notification)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to show chat notification", e)
             }
         }
     }
