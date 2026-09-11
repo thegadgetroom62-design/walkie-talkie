@@ -375,7 +375,7 @@ fun WalkieTalkieApp(
         hasPermissions = results.values.all { it }
     }
 
-    val requestPermissions = {
+    val requestPermissions: () -> Unit = {
         try {
             val perms = mutableListOf(
                 Manifest.permission.RECORD_AUDIO,
