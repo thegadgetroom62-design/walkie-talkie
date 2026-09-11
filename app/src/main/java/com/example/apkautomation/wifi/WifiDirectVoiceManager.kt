@@ -172,23 +172,27 @@ class WifiDirectVoiceManager(
     }
 
     fun initialize() {
-        if (wifiP2pManager != null && channel == null) {
-            channel = wifiP2pManager.initialize(context, context.mainLooper, null)
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    ContextCompat.registerReceiver(
-                        context,
-                        receiver,
-                        intentFilter,
-                        ContextCompat.RECEIVER_EXPORTED
-                    )
-                } else {
-                    context.registerReceiver(receiver, intentFilter)
+        try {
+            if (wifiP2pManager != null && channel == null) {
+                channel = wifiP2pManager.initialize(context, context.mainLooper, null)
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        ContextCompat.registerReceiver(
+                            context,
+                            receiver,
+                            intentFilter,
+                            ContextCompat.RECEIVER_EXPORTED
+                        )
+                    } else {
+                        context.registerReceiver(receiver, intentFilter)
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Receiver register error", e)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Receiver register error", e)
+                startPassiveWatcher()
             }
-            startPassiveWatcher()
+        } catch (t: Throwable) {
+            Log.e(TAG, "Wi-Fi Direct P2P initialize unsupported or restricted on this device (HMS/EMUI)", t)
         }
     }
 
@@ -197,12 +201,16 @@ class WifiDirectVoiceManager(
         passiveWatcherJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(1200)
-                if (_connectionState.value != ConnectionState.CONNECTED && channel != null) {
-                    wifiP2pManager?.requestConnectionInfo(channel) { info ->
-                        if (info != null && info.groupFormed) {
-                            handleConnectionEstablished(info)
+                try {
+                    if (_connectionState.value != ConnectionState.CONNECTED && channel != null) {
+                        wifiP2pManager?.requestConnectionInfo(channel) { info ->
+                            if (info != null && info.groupFormed) {
+                                handleConnectionEstablished(info)
+                            }
                         }
                     }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "P2P connection watcher warning", t)
                 }
             }
         }
@@ -709,11 +717,11 @@ class WifiDirectVoiceManager(
                     audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxCallVol, 0)
                     val maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVol, 0)
-                } catch (se: Exception) {
+                } catch (se: Throwable) {
                     Log.w(TAG, "Cannot override system volume (e.g. DND mode enabled)", se)
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Speakerphone routing error", e)
         }
     }

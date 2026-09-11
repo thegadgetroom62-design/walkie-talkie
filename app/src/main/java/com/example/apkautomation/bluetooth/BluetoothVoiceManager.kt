@@ -98,7 +98,7 @@ class BluetoothVoiceManager(
                 @Suppress("DEPRECATION")
                 audioManager.isSpeakerphoneOn = enabled
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Failed to route audio to speaker", e)
         }
     }

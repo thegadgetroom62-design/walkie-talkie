@@ -42,7 +42,7 @@ class WifiVideoManager(
         private const val MIME_TYPE = MediaFormat.MIMETYPE_VIDEO_AVC
     }
 
-    private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var cameraThread: HandlerThread? = null
@@ -240,6 +240,7 @@ class WifiVideoManager(
     @SuppressLint("MissingPermission")
     private fun startCamera() {
         val handler = cameraHandler ?: return
+        val mgr = cameraManager ?: return
         try {
             val targetFacing = if (_isCameraFacingFront.value) {
                 CameraCharacteristics.LENS_FACING_FRONT
@@ -248,8 +249,8 @@ class WifiVideoManager(
             }
 
             var selectedCameraId: String? = null
-            for (id in cameraManager.cameraIdList) {
-                val characteristics = cameraManager.getCameraCharacteristics(id)
+            for (id in mgr.cameraIdList) {
+                val characteristics = mgr.getCameraCharacteristics(id)
                 val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
                 if (facing == targetFacing) {
                     selectedCameraId = id
@@ -260,9 +261,9 @@ class WifiVideoManager(
                 }
             }
 
-            if (selectedCameraId == null && cameraManager.cameraIdList.isNotEmpty()) {
-                selectedCameraId = cameraManager.cameraIdList[0]
-                val characteristics = cameraManager.getCameraCharacteristics(selectedCameraId)
+            if (selectedCameraId == null && mgr.cameraIdList.isNotEmpty()) {
+                selectedCameraId = mgr.cameraIdList[0]
+                val characteristics = mgr.getCameraCharacteristics(selectedCameraId)
                 val sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
                 _localCameraRotation.value = sensor
             }

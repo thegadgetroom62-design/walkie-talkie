@@ -132,7 +132,7 @@ fun FloatingBottomDock(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Surface(
@@ -148,8 +148,8 @@ fun FloatingBottomDock(
         ) {
             Row(
                 modifier = Modifier
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(horizontal = 6.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 NavDestination.values().forEach { destination ->
@@ -175,7 +175,7 @@ fun FloatingBottomDock(
                     ) {
                         Row(
                             modifier = Modifier
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center
                         ) {

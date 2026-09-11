@@ -17,13 +17,13 @@ import java.util.Random
 object StunClient {
     private const val TAG = "StunClient"
 
-    // Google's high-availability public STUN servers
+    // High-availability public STUN servers (Open & Google STUN for HMS compatibility)
     private val STUN_SERVERS = listOf(
+        Pair("stun.cloudflare.com", 3478),
+        Pair("stun.syncthing.net", 3478),
         Pair("stun.l.google.com", 19302),
         Pair("stun1.l.google.com", 19302),
-        Pair("stun2.l.google.com", 19302),
-        Pair("stun3.l.google.com", 19302),
-        Pair("stun4.l.google.com", 19302)
+        Pair("stun2.l.google.com", 19302)
     )
 
     private const val MAGIC_COOKIE = 0x2112A442

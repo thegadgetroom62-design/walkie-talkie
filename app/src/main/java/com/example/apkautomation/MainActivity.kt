@@ -129,7 +129,11 @@ class MainActivity : ComponentActivity() {
 
         btVoiceManager = BluetoothVoiceManager(this, bluetoothAdapter, lifecycleScope)
         wifiVoiceManager = WifiDirectVoiceManager(this, lifecycleScope)
-        wifiVoiceManager.initialize()
+        try {
+            wifiVoiceManager.initialize()
+        } catch (t: Throwable) {
+            android.util.Log.e("MainActivity", "Failed to initialize WifiDirectVoiceManager", t)
+        }
         directIpManager = DirectIpCommsManager(this, lifecycleScope)
         chatManager = ChatManager(
             context = this,
@@ -319,9 +323,6 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.CAMERA,
             Manifest.permission.ACCESS_FINE_LOCATION
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            permissions.add(Manifest.permission.ACTIVITY_RECOGNITION)
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
@@ -330,8 +331,13 @@ class MainActivity : ComponentActivity() {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        return permissions.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        return try {
+            permissions.all {
+                ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("MainActivity", "Error checking permissions", t)
+            true
         }
     }
 }
@@ -370,22 +376,24 @@ fun WalkieTalkieApp(
     }
 
     val requestPermissions = {
-        val perms = mutableListOf(
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.CAMERA,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            perms.add(Manifest.permission.ACTIVITY_RECOGNITION)
+        try {
+            val perms = mutableListOf(
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.CAMERA,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+                perms.add(Manifest.permission.BLUETOOTH_SCAN)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+                perms.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            permissionLauncher.launch(perms.toTypedArray())
+        } catch (t: Throwable) {
+            android.util.Log.e("MainActivity", "Error requesting permissions", t)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-            perms.add(Manifest.permission.BLUETOOTH_SCAN)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
-        }
-        permissionLauncher.launch(perms.toTypedArray())
     }
 
     val isBtConnected = (btManager.connectionState.collectAsState().value == ConnectionState.CONNECTED)

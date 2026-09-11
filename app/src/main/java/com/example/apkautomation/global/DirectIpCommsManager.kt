@@ -221,18 +221,30 @@ class DirectIpCommsManager(
     private val signalingEngine = MqttSignalingEngine()
 
     init {
-        refreshLocalIp()
-        initAudioTrack()
+        try {
+            refreshLocalIp()
+        } catch (t: Throwable) {
+            Log.e(TAG, "refreshLocalIp error", t)
+        }
+        try {
+            initAudioTrack()
+        } catch (t: Throwable) {
+            Log.e(TAG, "initAudioTrack error", t)
+        }
 
         try {
             toneGenerator = ToneGenerator(AudioManager.STREAM_ALARM, 100)
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
 
         signalingEngine.onMessageListener = { topic, payload ->
             handleSignalingMessage(topic, payload)
         }
 
-        startLobbyDiscovery()
+        try {
+            startLobbyDiscovery()
+        } catch (t: Throwable) {
+            Log.e(TAG, "startLobbyDiscovery error", t)
+        }
     }
 
     fun updateSecurityPin(pin: String) {
@@ -721,7 +733,7 @@ class DirectIpCommsManager(
 
             audioTrack?.play()
             applySpeakerphoneRouting(_isSpeakerphone.value)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "AudioTrack init error", e)
         }
     }
@@ -959,11 +971,11 @@ class DirectIpCommsManager(
                     audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, maxCallVol, 0)
                     val maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                     audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxMusicVol, 0)
-                } catch (se: Exception) {
+                } catch (se: Throwable) {
                     Log.w(TAG, "Audio volume override restricted by system (e.g. DND)", se)
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Speakerphone routing error", e)
         }
     }
